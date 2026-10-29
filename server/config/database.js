@@ -1,4 +1,4 @@
-const mongoose = require("mongoose")
+const mongoose = require("mongoose");
 const { Constants } = require("./constants");
 
 const dbConnect = async()=>{
@@ -10,4 +10,4 @@ const dbConnect = async()=>{
     }
 }
 
-module.exports = {dbConnect}
+module.exports = {dbConnect};
