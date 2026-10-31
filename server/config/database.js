@@ -1,5 +1,5 @@
 const mongoose = require("mongoose");
-const { Constants } = require("./constants");
+const { Constants } = require("../config/constants.js");
 
 const dbConnect = async()=>{
     try {
