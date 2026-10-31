@@ -1,25 +1,26 @@
 const jwt = require('jsonwebtoken');
-const User = require("../model/User");
-const Constants = require("../config/constants.js")
-const genarateToken = (id)=>{
-    return jwt.sign({id},
-        Constants.JWT_SECRET,
-    {expiresIn : Constants.JWT_EXPIRE}
-    );
+const User = require("../model/user.js");
+const { Constants } = require("../config/constants.js");
+
+const generateToken = (id) => {
+  return jwt.sign(
+    { id },
+    Constants.JWT_SECRET,
+    { expiresIn: Constants.JWT_EXPIRE }
+  );
 };
 
+const registerUser = async (req, res, next) => {
+  try {
+    const { name, email, password, phone } = req.body || {};
+    if (!name || !email || !password) {
+      return res.status(400).json({
+        success: false,
+        message: "Please provide name, email and password",
+      });
+    }
 
-const registerUser = async(req,res,next) => {
-    try{
-        const {name,email,password,phone} = req.body || {};
-        if (!name || !email || !password ){
-            return res.status(400).json({
-                success:false,
-                message:"Please provide name,email and password",
-            });
-        
-        }
-         if (password.length < 6) {
+    if (password.length < 6) {
       return res.status(400).json({
         success: false,
         message: 'Password must be at least 6 characters long',
@@ -62,7 +63,7 @@ const registerUser = async(req,res,next) => {
 
 const loginUser = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
 
     if (!email || !password) {
       return res.status(400).json({
@@ -122,7 +123,7 @@ const updateProfile = async (req, res, next) => {
       return res.status(404).json({ success: false, message: 'User not found' });
     }
 
-    const { name, email, phone, currentPassword, newPassword } = req.body;
+    const { name, email, phone, currentPassword, newPassword } = req.body || {};
 
     if (name) user.name = name.trim();
     if (phone !== undefined) user.phone = phone.trim();
