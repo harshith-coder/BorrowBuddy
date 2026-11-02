@@ -42,8 +42,8 @@ const upload = multer({
   }
 });
 
-router.post("/", upload.single('image'), createGroup);
-router.get("/", getGroups);
+router.post("/", protect, upload.single('image'), createGroup);
+router.get("/", protect, getGroups);
 
 router.get("/:id/items", protect, getGroupItems);
 router.post("/:id/items", protect, addItem);
