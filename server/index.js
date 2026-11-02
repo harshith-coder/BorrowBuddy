@@ -1,4 +1,5 @@
 const express = require("express");
+const cors = require("cors");
 const { Constants } = require("./config/constants.js");
 const { dbConnect } = require("./config/database.js");
 
@@ -11,24 +12,11 @@ const { notFound, errorHandler } = require("./middleware/errorMiddleware.js");
 
 const app = express();
 
-app.use((req, res, next) => {
-  res.header("Access-Control-Allow-Origin", "*");
-  res.header(
-    "Access-Control-Allow-Methods",
-    "GET, POST, PUT, PATCH, DELETE, OPTIONS"
-  );
-  res.header(
-    "Access-Control-Allow-Headers",
-    "Origin, X-Requested-With, Content-Type, Accept, Authorization"
-  );
-
-  if (req.method === "OPTIONS") {
-    return res.sendStatus(200);
-  }
-
-  next();
-});
-
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Origin", "X-Requested-With", "Content-Type", "Accept", "Authorization"]
+}));
 app.use(express.json());
 
 app.use("/api/auth", authRoutes);
