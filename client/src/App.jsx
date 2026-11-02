@@ -15,6 +15,171 @@ function App() {
   const [user, setUser] = useState(null)
   const [currentPage, setCurrentPage] = useState('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
+  const [groupName, setGroupName] = useState('')
+  const [groupDescription, setGroupDescription] = useState('')
+  const [groupImage, setGroupImage] = useState(null)
+  const [selectedCategories, setSelectedCategories] = useState([])
+  const [selectedMembers, setSelectedMembers] = useState([])
+  const [memberSearchQuery, setMemberSearchQuery] = useState('')
+  const [profileImage, setProfileImage] = useState(null)
+  const [groups, setGroups] = useState([])
+  const [availableMembers, setAvailableMembers] = useState([])
+  const [membersLoading, setMembersLoading] = useState(false)
+
+  const categories = [
+    { id: 'books', name: 'Books', icon: '📚' },
+    { id: 'electronics', name: 'Electronics', icon: '💻' },
+    { id: 'sports', name: 'Sports Equipment', icon: '⚽' },
+    { id: 'lab', name: 'Lab Equipment', icon: '🔬' },
+    { id: 'tools', name: 'Project Tools', icon: '🔧' },
+    { id: 'study', name: 'Study Materials', icon: '📖' },
+    { id: 'others', name: 'Others', icon: '📦' },
+  ]
+
+  const handleImageUpload = (e) => {
+    const file = e.target.files[0]
+    if (file) {
+      if (file.size > 2 * 1024 * 1024) {
+        alert('File size must be less than 2MB')
+        return
+      }
+      if (!['image/png', 'image/jpeg', 'image/jpg'].includes(file.type)) {
+        alert('Only PNG and JPG files are allowed')
+        return
+      }
+      setGroupImage(file)
+    }
+  }
+
+  const toggleCategory = (categoryId) => {
+    setSelectedCategories(prev =>
+      prev.includes(categoryId)
+        ? prev.filter(id => id !== categoryId)
+        : [...prev, categoryId]
+    )
+  }
+
+  const toggleMember = (memberId) => {
+    setAvailableMembers(prev =>
+      prev.map(member =>
+        member.id === memberId ? { ...member, selected: !member.selected } : member
+      )
+    )
+  }
+
+  const handleCreateGroupLegacy = async () => {
+    if (!groupName.trim()) {
+      alert('Please enter a group name')
+      return
+    }
+
+    const selectedMemberData = availableMembers.filter(m => m.selected)
+    if (selectedMemberData.length === 0) {
+      alert('Please select at least one member')
+      return
+    }
+
+    const formData = new FormData()
+    formData.append('name', groupName)
+    formData.append('description', groupDescription)
+    formData.append('categories', JSON.stringify(selectedCategories))
+    formData.append('members', JSON.stringify(selectedMemberData.map(m => m.id)))
+    if (groupImage) {
+      formData.append('image', groupImage)
+    }
+
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch('http://localhost:3000/api/groups', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+        body: formData,
+      })
+
+      const data = await response.json()
+      if (data.success) {
+        // Reset form
+        setGroupName('')
+        setGroupDescription('')
+        setGroupImage(null)
+        setSelectedCategories([])
+        setAvailableMembers(prev => prev.map(m => ({ ...m, selected: false })))
+        setMemberSearchQuery('')
+        
+        // Navigate to my-groups and refresh
+        setCurrentPage('my-groups')
+        fetchGroups()
+      } else {
+        alert(data.message || 'Failed to create group')
+      }
+    } catch (error) {
+      console.error('Error creating group:', error)
+      alert('Failed to create group')
+    }
+  }
+
+  const handleCreateGroup = async () => {
+    if (!groupName.trim()) {
+      alert('Please enter a group name')
+      return
+    }
+
+    const selectedMemberData = availableMembers.filter(member => member.selected)
+    if (selectedMemberData.length === 0) {
+      alert('Please select at least one member')
+      return
+    }
+
+    try {
+      const token = localStorage.getItem('token')
+      const groupResponse = await fetch('http://localhost:3000/api/groups', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ name: groupName.trim() }),
+      })
+      const groupData = await groupResponse.json()
+
+      if (!groupResponse.ok || !groupData.success) {
+        throw new Error(groupData.message || 'Failed to create group')
+      }
+
+      for (const member of selectedMemberData) {
+        const memberResponse = await fetch(
+          `http://localhost:3000/api/groups/${groupData.data._id}/members`,
+          {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({ userId: member.id }),
+          }
+        )
+        const memberData = await memberResponse.json()
+
+        if (!memberResponse.ok || !memberData.success) {
+          throw new Error(memberData.message || `Failed to add ${member.name}`)
+        }
+      }
+
+      setGroupName('')
+      setGroupDescription('')
+      setGroupImage(null)
+      setSelectedCategories([])
+      setAvailableMembers(prev => prev.map(member => ({ ...member, selected: false })))
+      setMemberSearchQuery('')
+      setCurrentPage('my-groups')
+      fetchGroups()
+    } catch (error) {
+      console.error('Error creating group:', error)
+      alert(error.message || 'Failed to create group')
+    }
+  }
 
   // Check if user is already logged in
   useEffect(() => {
@@ -25,6 +190,135 @@ function App() {
       setUser(JSON.parse(userData))
     }
   }, [])
+
+  useEffect(() => {
+    if (currentPage !== 'create-group' || !isAuthenticated) return
+
+    const fetchUsers = async () => {
+      setMembersLoading(true)
+
+      try {
+        const token = localStorage.getItem('token')
+        const response = await fetch('http://localhost:3000/api/auth/users', {
+          headers: {
+            Authorization: `Bearer ${token}`,
+          },
+        })
+        const data = await response.json()
+
+        if (!response.ok || !data.success) {
+          throw new Error(data.message || 'Failed to load users')
+        }
+
+        setAvailableMembers(
+          data.data.map(member => ({
+            id: member._id,
+            name: member.name,
+            email: member.email,
+            selected: false,
+          }))
+        )
+      } catch (error) {
+        console.error('Error fetching users:', error)
+        alert(error.message || 'Failed to load users')
+      } finally {
+        setMembersLoading(false)
+      }
+    }
+
+    fetchUsers()
+  }, [currentPage, isAuthenticated])
+
+  // Fetch groups when on my-groups page
+  useEffect(() => {
+    if (currentPage === 'my-groups' && isAuthenticated) {
+      fetchGroups()
+    }
+  }, [currentPage, isAuthenticated])
+
+  const fetchGroups = async () => {
+    try {
+      const token = localStorage.getItem('token')
+      const response = await fetch('http://localhost:3000/api/groups', {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+        },
+      })
+      const data = await response.json()
+      if (data.success) {
+        // If no groups from backend, show default groups
+        if (data.data.length === 0) {
+          setGroups([
+            {
+              _id: 'default-1',
+              name: 'Friends Group',
+              description: 'Share and borrow everyday items with friends.',
+              categories: ['Books', 'Chargers', 'Sports Equipment'],
+              memberIds: [
+                { name: 'Madhu' },
+                { name: 'Sri' },
+                { name: 'Priya' },
+                { name: 'Anil' },
+                { name: 'Rahul' }
+              ],
+              image: null
+            },
+            {
+              _id: 'default-2',
+              name: 'College Group',
+              description: 'Share lab equipment and project tools with college mates',
+              categories: ['Lab Equipment', 'Project Tools'],
+              memberIds: [
+                { name: 'Sri' },
+                { name: 'Venkat' },
+                { name: 'Rahul' },
+                { name: 'Anil' },
+                { name: 'Kiran' },
+                { name: 'Teja' }
+              ],
+              image: null
+            }
+          ])
+        } else {
+          setGroups(data.data)
+        }
+      }
+    } catch (error) {
+      console.error('Error fetching groups:', error)
+      // On error, show default groups
+      setGroups([
+        {
+          _id: 'default-1',
+          name: 'Friends Group',
+          description: 'Share and borrow everyday items with friends.',
+          categories: ['Books', 'Chargers', 'Sports Equipment'],
+          memberIds: [
+            { name: 'Madhu' },
+            { name: 'Sri' },
+            { name: 'Priya' },
+            { name: 'Anil' },
+            { name: 'Rahul' }
+          ],
+          image: null
+        },
+        {
+          _id: 'default-2',
+          name: 'College Group',
+          description: 'Share lab equipment and project tools with college mates',
+          categories: ['Lab Equipment', 'Project Tools'],
+          memberIds: [
+            { name: 'Sri' },
+            { name: 'Venkat' },
+            { name: 'Rahul' },
+            { name: 'Anil' },
+            { name: 'Kiran' },
+            { name: 'Teja' }
+          ],
+          image: null
+        }
+      ])
+    }
+  }
 
   const handleSignup = async (e) => {
     e.preventDefault()
@@ -299,7 +593,7 @@ function App() {
                     <h1 className="dashboard-greeting">My Groups</h1>
                     <p className="dashboard-subtitle">Join and manage your groups to share, borrow, and make better use of resources together</p>
                   </div>
-                  <button className="create-group-btn">
+                  <button className="create-group-btn" onClick={() => setCurrentPage('create-group')}>
                     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <line x1="12" y1="5" x2="12" y2="19" />
                       <line x1="5" y1="12" x2="19" y2="12" />
@@ -321,7 +615,7 @@ function App() {
                           </svg>
                         </div>
                         <div className="group-stat-content">
-                          <div className="group-stat-value">2</div>
+                          <div className="group-stat-value">{groups.length}</div>
                           <div className="group-stat-label">Total Groups</div>
                         </div>
                       </div>
@@ -334,7 +628,7 @@ function App() {
                           </svg>
                         </div>
                         <div className="group-stat-content">
-                          <div className="group-stat-value">10</div>
+                          <div className="group-stat-value">{groups.reduce((acc, group) => acc + (group.memberIds?.length || 0), 0)}</div>
                           <div className="group-stat-label">Total Members</div>
                         </div>
                       </div>
@@ -349,7 +643,7 @@ function App() {
                           </svg>
                         </div>
                         <div className="group-stat-content">
-                          <div className="group-stat-value">5</div>
+                          <div className="group-stat-value">0</div>
                           <div className="group-stat-label">Active Loans</div>
                         </div>
                       </div>
@@ -373,114 +667,75 @@ function App() {
                     </div>
 
                     <div className="groups-list">
-                      <div className="group-compact-card">
-                        <div className="group-compact-left">
-                          <div className="group-compact-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                              <circle cx="9" cy="7" r="4" />
-                              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                            </svg>
-                          </div>
+                      {groups.length === 0 ? (
+                        <div className="no-groups-message">
+                          <p>No groups yet. Create your first group to get started!</p>
                         </div>
-                        <div className="group-compact-center">
-                          <h3 className="group-compact-name">Friends Group</h3>
-                          <div className="group-compact-tags">
-                            <span className="group-compact-tag">Books</span>
-                            <span className="group-compact-tag">Chargers</span>
-                            <span className="group-compact-tag">Sports Equipment</span>
-                          </div>
-                          <p className="group-compact-desc">Share and borrow everyday items with friends.</p>
-                        </div>
-                        <div className="group-compact-right">
-                          <button className="group-compact-view-btn">
-                            View Group
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="9 18 15 12 9 6" />
-                            </svg>
-                          </button>
-                        </div>
-                        <div className="group-compact-bottom">
-                          <div className="group-compact-members">
-                            <div className="member-avatar-compact charcoal">M</div>
-                            <div className="member-avatar-compact slate">S</div>
-                            <div className="member-avatar-compact purple">P</div>
-                            <div className="member-avatar-compact light">A</div>
-                            <div className="member-avatar-more-compact">+1</div>
-                            <span className="member-count-compact">4 members</span>
-                          </div>
-                          <div className="group-compact-stats">
-                            <div className="stat-with-icon">
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                              </svg>
-                              <span>12 items</span>
+                      ) : (
+                        groups.map((group) => (
+                          <div key={group._id} className="group-compact-card">
+                            <div className="group-compact-left">
+                              {group.image ? (
+                                <img src={`http://localhost:3000/${group.image}`} alt={group.name} className="group-compact-image" />
+                              ) : (
+                                <div className="group-compact-icon">
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                                    <circle cx="9" cy="7" r="4" />
+                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                                  </svg>
+                                </div>
+                              )}
                             </div>
-                            <div className="stat-with-icon">
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
-                                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
-                              </svg>
-                              <span>3 active loans</span>
+                            <div className="group-compact-center">
+                              <h3 className="group-compact-name">{group.name}</h3>
+                              <div className="group-compact-tags">
+                                {group.categories && group.categories.map((cat, idx) => (
+                                  <span key={idx} className="group-compact-tag">{cat}</span>
+                                ))}
+                              </div>
+                              <p className="group-compact-desc">{group.description || 'No description'}</p>
                             </div>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="group-compact-card">
-                        <div className="group-compact-left">
-                          <div className="group-compact-icon">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                              <circle cx="9" cy="7" r="4" />
-                              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                            </svg>
-                          </div>
-                        </div>
-                        <div className="group-compact-center">
-                          <h3 className="group-compact-name">College Group</h3>
-                          <div className="group-compact-tags">
-                            <span className="group-compact-tag">Lab Equipment</span>
-                            <span className="group-compact-tag">Project Tools</span>
-                          </div>
-                          <p className="group-compact-desc">Share lab equipment and project tools with college mates</p>
-                        </div>
-                        <div className="group-compact-right">
-                          <button className="group-compact-view-btn">
-                            View Group
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <polyline points="9 18 15 12 9 6" />
-                            </svg>
-                          </button>
-                        </div>
-                        <div className="group-compact-bottom">
-                          <div className="group-compact-members">
-                            <div className="member-avatar-compact charcoal">S</div>
-                            <div className="member-avatar-compact slate">V</div>
-                            <div className="member-avatar-compact purple">R</div>
-                            <div className="member-avatar-compact light">A</div>
-                            <div className="member-avatar-more-compact">+2</div>
-                            <span className="member-count-compact">6 members</span>
-                          </div>
-                          <div className="group-compact-stats">
-                            <div className="stat-with-icon">
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                              </svg>
-                              <span>12 items</span>
+                            <div className="group-compact-right">
+                              <button className="group-compact-view-btn">
+                                View Group
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="9 18 15 12 9 6" />
+                                </svg>
+                              </button>
                             </div>
-                            <div className="stat-with-icon">
-                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
-                                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
-                              </svg>
-                              <span>3 active loans</span>
+                            <div className="group-compact-bottom">
+                              <div className="group-compact-members">
+                                {group.memberIds && group.memberIds.slice(0, 4).map((member, idx) => (
+                                  <div key={idx} className={`member-avatar-compact ${['charcoal', 'slate', 'purple', 'light'][idx % 4]}`}>
+                                    {member.name ? member.name.charAt(0).toUpperCase() : 'U'}
+                                  </div>
+                                ))}
+                                {group.memberIds && group.memberIds.length > 4 && (
+                                  <div className="member-avatar-more-compact">+{group.memberIds.length - 4}</div>
+                                )}
+                                <span className="member-count-compact">{group.memberIds?.length || 0} members</span>
+                              </div>
+                              <div className="group-compact-stats">
+                                <div className="stat-with-icon">
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                                  </svg>
+                                  <span>0 items</span>
+                                </div>
+                                <div className="stat-with-icon">
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+                                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+                                  </svg>
+                                  <span>0 active loans</span>
+                                </div>
+                              </div>
                             </div>
                           </div>
-                        </div>
-                      </div>
+                        ))
+                      )}
                     </div>
                   </div>
 
@@ -621,6 +876,286 @@ function App() {
                       </div>
                     </div>
                   </aside>
+                </div>
+              </>
+            )}
+
+            {currentPage === 'create-group' && (
+              <>
+                <header className="dashboard-header">
+                  <div className="header-content">
+                    <h1 className="dashboard-greeting">Create New Group</h1>
+                    <p className="dashboard-subtitle">Create a new group to share and borrow items with your friends</p>
+                  </div>
+                </header>
+
+                <div className="create-group-container">
+                  <div className="create-group-form">
+                    {/* Group Details Section */}
+                    <div className="form-section">
+                      <div className="section-header">
+                        <div className="section-icon-wrapper">
+                          <svg className="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                            <circle cx="9" cy="7" r="4" />
+                          </svg>
+                        </div>
+                        <h3 className="section-title">Group Details</h3>
+                      </div>
+
+                      <div className="group-details-grid">
+                        <div className="image-upload-section">
+                          <label className="image-upload-label">
+                            <input
+                              type="file"
+                              accept="image/png, image/jpeg, image/jpg"
+                              onChange={handleImageUpload}
+                              className="image-upload-input"
+                            />
+                            <div className="image-upload-placeholder">
+                              {groupImage ? (
+                                <img src={URL.createObjectURL(groupImage)} alt="Group" className="uploaded-image" />
+                              ) : (
+                                <>
+                                  <svg className="upload-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
+                                    <circle cx="8.5" cy="8.5" r="1.5" />
+                                    <polyline points="21 15 16 10 5 21" />
+                                  </svg>
+                                  <span className="upload-text">Add Group Image</span>
+                                  <span className="upload-subtext">PNG/JPG, max 2MB</span>
+                                </>
+                              )}
+                            </div>
+                          </label>
+                          {groupImage && (
+                            <button
+                              className="btn-remove-group-image"
+                              onClick={(e) => {
+                                e.preventDefault()
+                                setGroupImage(null)
+                              }}
+                            >
+                              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="3 6 5 6 21 6" />
+                                <path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+                              </svg>
+                              Remove Image
+                            </button>
+                          )}
+                        </div>
+
+                        <div className="group-inputs-section">
+                          <div className="form-group">
+                            <label className="form-label">Group Name *</label>
+                            <input
+                              type="text"
+                              className="form-input"
+                              placeholder="Enter group name"
+                              value={groupName}
+                              onChange={(e) => setGroupName(e.target.value)}
+                            />
+                          </div>
+
+                          <div className="form-group">
+                            <label className="form-label">Description</label>
+                            <textarea
+                              className="form-textarea"
+                              placeholder="Tell others what this group is about..."
+                              value={groupDescription}
+                              onChange={(e) => {
+                                if (e.target.value.length <= 150) {
+                                  setGroupDescription(e.target.value)
+                                }
+                              }}
+                              maxLength={150}
+                            />
+                            <div className="char-counter">{groupDescription.length}/150</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="section-divider"></div>
+
+                    {/* Choose Categories Section */}
+                    <div className="form-section">
+                      <div className="section-header">
+                        <div className="section-icon-wrapper">
+                          <svg className="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
+                            <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+                          </svg>
+                        </div>
+                        <h3 className="section-title">Choose Categories</h3>
+                      </div>
+
+                      <div className="categories-grid">
+                        {categories.map((category) => (
+                          <button
+                            key={category.id}
+                            className={`category-pill ${selectedCategories.includes(category.id) ? 'selected' : ''}`}
+                            onClick={() => toggleCategory(category.id)}
+                          >
+                            <span className="category-icon">{category.icon}</span>
+                            <span className="category-name">{category.name}</span>
+                            {selectedCategories.includes(category.id) && (
+                              <svg className="category-check" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="20 6 9 17 4 12" />
+                              </svg>
+                            )}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div className="section-divider"></div>
+
+                    {/* Add Members Section */}
+                    <div className="form-section">
+                      <div className="section-header">
+                        <div className="section-icon-wrapper">
+                          <svg className="section-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                            <circle cx="9" cy="7" r="4" />
+                          </svg>
+                        </div>
+                        <h3 className="section-title">Add Members</h3>
+                      </div>
+
+                      <div className="form-group">
+                        <div className="input-with-icon">
+                          <svg className="input-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <circle cx="11" cy="11" r="8" />
+                            <line x1="21" y1="21" x2="16.65" y2="16.65" />
+                          </svg>
+                          <input
+                            type="text"
+                            className="form-input"
+                            placeholder="Search by name or email..."
+                            value={memberSearchQuery}
+                            onChange={(e) => setMemberSearchQuery(e.target.value)}
+                          />
+                        </div>
+                      </div>
+
+                      {membersLoading ? (
+                        <p>Loading users...</p>
+                      ) : (
+                      <div className="members-list">
+                        {availableMembers
+                          .filter(member =>
+                            member.name.toLowerCase().includes(memberSearchQuery.toLowerCase()) ||
+                            member.email.toLowerCase().includes(memberSearchQuery.toLowerCase())
+                          )
+                          .map((member) => (
+                            <div key={member.id} className="member-item">
+                              <div className="member-avatar">
+                                {member.name.charAt(0).toUpperCase()}
+                              </div>
+                              <div className="member-details">
+                                <div className="member-name">{member.name}</div>
+                                <div className="member-email">{member.email}</div>
+                              </div>
+                              <input
+                                type="checkbox"
+                                className="member-checkbox"
+                                checked={member.selected}
+                                onChange={() => toggleMember(member.id)}
+                              />
+                            </div>
+                          ))}
+                      </div>
+                      )}
+                    </div>
+
+                    <div className="form-actions">
+                      <button className="btn-cancel" onClick={() => setCurrentPage('my-groups')}>
+                        Cancel
+                      </button>
+                      <button className="btn-create" onClick={handleCreateGroup}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                          <line x1="12" y1="5" x2="12" y2="19" />
+                          <line x1="5" y1="12" x2="19" y2="12" />
+                        </svg>
+                        Create Group
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {currentPage === 'profile' && (
+              <>
+                <header className="dashboard-header">
+                  <div className="header-content">
+                    <h1 className="dashboard-greeting">Profile</h1>
+                    <p className="dashboard-subtitle">Manage your account settings and profile information</p>
+                  </div>
+                </header>
+
+                <div className="profile-container">
+                  <div className="profile-form">
+                    <div className="profile-image-section">
+                      <div className="profile-image-wrapper">
+                        {profileImage ? (
+                          <img src={URL.createObjectURL(profileImage)} alt="Profile" className="profile-image-preview" />
+                        ) : (
+                          <div className="profile-image-placeholder">
+                            {user?.name?.split(' ').map(n => n[0]).join('').substring(0, 2).toUpperCase()}
+                          </div>
+                        )}
+                      </div>
+                      <div className="profile-image-actions">
+                        <label className="btn-upload-image">
+                          <input
+                            type="file"
+                            accept="image/png, image/jpeg, image/jpg"
+                            onChange={(e) => {
+                              const file = e.target.files[0]
+                              if (file) {
+                                if (file.size > 2 * 1024 * 1024) {
+                                  alert('File size must be less than 2MB')
+                                  return
+                                }
+                                setProfileImage(file)
+                              }
+                            }}
+                            className="image-upload-input"
+                          />
+                          Upload Image
+                        </label>
+                        {profileImage && (
+                          <button className="btn-remove-image" onClick={() => setProfileImage(null)}>
+                            Remove
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="profile-details-section">
+                      <div className="form-group">
+                        <label className="form-label">Full Name</label>
+                        <input
+                          type="text"
+                          className="form-input"
+                          value={user?.name || ''}
+                          disabled
+                        />
+                      </div>
+
+                      <div className="form-group">
+                        <label className="form-label">Email</label>
+                        <input
+                          type="email"
+                          className="form-input"
+                          value={user?.email || ''}
+                          disabled
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </>
             )}

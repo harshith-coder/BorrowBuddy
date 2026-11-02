@@ -1,4 +1,5 @@
 const express = require("express");
+const multer = require("multer");
 
 const router = express.Router();
 
@@ -15,8 +16,34 @@ const {
 
 const { protect } = require("../middleware/authMiddleware.js");
 
-router.post("/", protect, createGroup);
-router.get("/", protect, getGroups);
+// Configure multer for group image uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, 'uploads/');
+  },
+  filename: function (req, file, cb) {
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, 'group-' + uniqueSuffix + '.' + file.originalname.split('.').pop());
+  }
+});
+
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 2 * 1024 * 1024 // 2MB limit
+  },
+  fileFilter: function (req, file, cb) {
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only JPEG, JPG, and PNG files are allowed'), false);
+    }
+  }
+});
+
+router.post("/", upload.single('image'), createGroup);
+router.get("/", getGroups);
 
 router.get("/:id/items", protect, getGroupItems);
 router.post("/:id/items", protect, addItem);
