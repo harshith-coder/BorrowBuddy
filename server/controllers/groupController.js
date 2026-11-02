@@ -1,6 +1,7 @@
 const Group = require("../model/group.js");
 const BorrowableItem = require("../model/borrowableItem.js");
 const Loan = require("../model/loan.js");
+const User = require("../model/user.js");
 
 const isGroupMember = (group, userId) =>
   group.ownerId.toString() === userId.toString() ||
@@ -12,7 +13,7 @@ const isManager = (group, userId) =>
 
 const createGroup = async (req, res, next) => {
   try {
-    const { name } = req.body;
+    const { name } = req.body || {};
 
     if (!name || !name.trim()) {
       return res.status(400).json({
@@ -49,6 +50,94 @@ const getGroups = async (req, res, next) => {
     res.status(200).json({
       success: true,
       data: groups,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const addGroupMember = async (req, res, next) => {
+  try {
+    const { userId } = req.body || {};
+
+    if (!userId) {
+      return res.status(400).json({
+        success: false,
+        message: "User ID is required",
+      });
+    }
+
+    const group = await Group.findById(req.params.id);
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: "Group not found",
+      });
+    }
+
+    if (!isManager(group, req.user._id)) {
+      return res.status(403).json({
+        success: false,
+        message: "Only a group manager can add members",
+      });
+    }
+
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({
+        success: false,
+        message: "User not found",
+      });
+    }
+
+    const alreadyMember = group.memberIds.some(
+      (memberId) => memberId.toString() === userId.toString()
+    );
+
+    if (alreadyMember) {
+      return res.status(400).json({
+        success: false,
+        message: "User is already a group member",
+      });
+    }
+
+    group.memberIds.push(user._id);
+    await group.save();
+
+    res.status(200).json({
+      success: true,
+      message: "Member added successfully",
+      data: group,
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const getGroupMembers = async (req, res, next) => {
+  try {
+    const group = await Group.findById(req.params.id)
+      .populate("memberIds", "name email phone avatar");
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: "Group not found",
+      });
+    }
+
+    if (!isGroupMember(group, req.user._id)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not a member of this group",
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      data: group.memberIds,
     });
   } catch (error) {
     next(error);
@@ -112,7 +201,7 @@ const addItem = async (req, res, next) => {
       });
     }
 
-    const { name, category, description } = req.body;
+    const { name, category, description } = req.body || {};
 
     if (!name || !category) {
       return res.status(400).json({
@@ -156,12 +245,38 @@ const createLoan = async (req, res, next) => {
       });
     }
 
-    const { itemId, borrowerId, checkoutDate, dueDate, note } = req.body;
+    const {
+      itemId,
+      borrowerId,
+      checkoutDate,
+      dueDate,
+      note,
+    } = req.body || {};
 
     if (!itemId || !borrowerId || !checkoutDate || !dueDate) {
       return res.status(400).json({
         success: false,
         message: "Item, borrower, checkout date and due date are required",
+      });
+    }
+
+    const parsedCheckoutDate = new Date(checkoutDate);
+    const parsedDueDate = new Date(dueDate);
+
+    if (
+      Number.isNaN(parsedCheckoutDate.getTime()) ||
+      Number.isNaN(parsedDueDate.getTime())
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Checkout date and due date must be valid dates",
+      });
+    }
+
+    if (parsedDueDate < parsedCheckoutDate) {
+      return res.status(400).json({
+        success: false,
+        message: "Due date cannot be before checkout date",
       });
     }
 
@@ -195,8 +310,8 @@ const createLoan = async (req, res, next) => {
       groupId: group._id,
       itemId,
       borrowerId,
-      checkoutDate,
-      dueDate,
+      checkoutDate: parsedCheckoutDate,
+      dueDate: parsedDueDate,
       note: note || "",
       status: "active",
     });
@@ -247,6 +362,8 @@ const getGroupLoans = async (req, res, next) => {
 module.exports = {
   createGroup,
   getGroups,
+  addGroupMember,
+  getGroupMembers,
   getGroupItems,
   addItem,
   createLoan,
