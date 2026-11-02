@@ -12,6 +12,15 @@ const groupSchema = new mongoose.Schema(
       type: String,
       default: "",
       trim: true,
+      maxlength: [150, "Description cannot be more than 150 characters"],
+    },
+    categories: {
+      type: [String],
+      default: [],
+    },
+    image: {
+      type: String,
+      default: "",
     },
     ownerId: {
       type: mongoose.Schema.Types.ObjectId,

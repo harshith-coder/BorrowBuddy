@@ -1,6 +1,8 @@
 const Group = require("../model/group.js");
 const BorrowableItem = require("../model/borrowableItem.js");
 const Loan = require("../model/loan.js");
+const User = require("../model/user.js");
+const mongoose = require("mongoose");
 
 const isGroupMember = (group, userId) =>
   group.ownerId.toString() === userId.toString() ||
@@ -12,7 +14,7 @@ const isManager = (group, userId) =>
 
 const createGroup = async (req, res, next) => {
   try {
-    const { name } = req.body;
+    const { name, description, categories, members } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({
@@ -21,12 +23,30 @@ const createGroup = async (req, res, next) => {
       });
     }
 
-    const group = await Group.create({
+    const parsedCategories = categories ? JSON.parse(categories) : [];
+    const parsedMembers = members ? JSON.parse(members) : [];
+
+    // For now, use a dummy user ID if no auth
+    const userId = req.user ? req.user._id : new mongoose.Types.ObjectId();
+
+    // Add current user to members if not already included
+    const allMemberIds = [...new Set([userId.toString(), ...parsedMembers])];
+
+    const groupData = {
       name: name.trim(),
-      ownerId: req.user._id,
-      memberIds: [req.user._id],
-      managerIds: [req.user._id],
-    });
+      description: description ? description.trim() : "",
+      categories: parsedCategories,
+      ownerId: userId,
+      memberIds: allMemberIds,
+      managerIds: [userId],
+    };
+
+    // Handle image upload if file is present
+    if (req.file) {
+      groupData.image = req.file.path;
+    }
+
+    const group = await Group.create(groupData);
 
     res.status(201).json({
       success: true,
