@@ -5,8 +5,8 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 
 const Constants = {
   DBURL: process.env.DBURL,
-  PORT: process.env.PORT,
-  HOST: process.env.HOST,
+  PORT: process.env.PORT || 3000,
+  HOST: process.env.HOST || "0.0.0.0",
   JWT_EXPIRE: process.env.JWT_EXPIRE,
   JWT_SECRET: process.env.JWT_SECRET,
 };
