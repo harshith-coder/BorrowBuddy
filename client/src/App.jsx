@@ -96,13 +96,30 @@ function App() {
     }
   }
 
+  async function fetchDiscoverableGroups(query = '') {
+    if (!isAuthenticated) return
+    setDiscoverLoading(true)
+    setDiscoverError('')
+    try {
+      const data = await apiRequest(`/groups/discover?search=${encodeURIComponent(query.trim())}`)
+      setDiscoverableGroups(data.data || [])
+    } catch (error) {
+      console.error('Error fetching discoverable groups:', error)
+      setDiscoverError(error.message || 'Could not discover groups')
+      setDiscoverableGroups([])
+    } finally {
+      setDiscoverLoading(false)
+    }
+  }
+
   const handleCreateGroup = async () => {
     if (!groupName.trim()) {
-      alert('Please enter a group name')
+      setAuthMessage({ type: 'error', text: 'Please enter a group name' })
       return
     }
 
-    const selectedMemberData = availableMembers.filter(member => member.selected)
+    setDataLoading(true)
+    setDataError('')
     try {
       const token = localStorage.getItem('token')
       const formData = new FormData()
@@ -113,6 +130,7 @@ function App() {
 
       const groupData = await apiRequest('/groups', { method: 'POST', body: formData }, token)
 
+      const selectedMemberData = availableMembers.filter(member => member.selected)
       for (const member of selectedMemberData) {
         await apiRequest('/invitations', {
           method: 'POST',
@@ -129,10 +147,14 @@ function App() {
       setSelectedCategories([])
       setAvailableMembers(prev => prev.map(member => ({ ...member, selected: false })))
       setMemberSearchQuery('')
+      setAuthMessage({ type: 'success', text: 'Group created successfully!' })
       setCurrentPage('my-groups')
+      await fetchGroups()
     } catch (error) {
       console.error('Error creating group:', error)
-      alert(error.message || 'Failed to create group')
+      setAuthMessage({ type: 'error', text: error.message || 'Failed to create group' })
+    } finally {
+      setDataLoading(false)
     }
   }
 
@@ -177,6 +199,15 @@ function App() {
     }
   }, [currentPage, isAuthenticated])
 
+  // Fetch discoverable groups when on discover-groups page
+  useEffect(() => {
+    if (currentPage === 'discover-groups' && isAuthenticated) {
+      // Load searchable discovery list; search query is applied on the backend.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
+      fetchDiscoverableGroups(discoverQuery)
+    }
+  }, [currentPage, isAuthenticated, discoverQuery])
+
   const handleViewGroup = (groupId) => {
     setSelectedGroupId(groupId)
     setCurrentPage('view-group')
@@ -187,6 +218,18 @@ function App() {
     await fetchGroups()
     setSelectedGroupId(null)
     setCurrentPage('my-groups')
+  }
+
+  const loadNotifications = async () => {
+    try {
+      const data = await apiRequest('/notifications')
+      const nextNotifications = data.data || []
+      setNotifications(nextNotifications)
+      setUnreadCount(nextNotifications.filter(notification => !notification.read).length)
+    } catch (error) {
+      console.error('Error loading notifications:', error)
+      setDataError(error.message || 'Could not load notifications')
+    }
   }
 
   const loadPageData = async (page) => {
@@ -431,7 +474,7 @@ function App() {
                 </svg>
                 Dashboard
               </a>
-              <a href="#" className={`sidebar-link ${currentPage === 'my-groups' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('my-groups') }}>
+              <a href="#" className={`sidebar-link ${currentPage === 'my-groups' || currentPage === 'discover-groups' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('my-groups') }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
                   <circle cx="9" cy="7" r="4" />
@@ -601,6 +644,7 @@ function App() {
                   </button>
                 </header>
 
+                {dataError && <div className="auth-message error">{dataError}</div>}
                 <div className="groups-content">
                   <div className="groups-main">
                     <div className="groups-stats">
@@ -654,9 +698,15 @@ function App() {
                           <circle cx="11" cy="11" r="8" />
                           <line x1="21" y1="21" x2="16.65" y2="16.65" />
                         </svg>
-                        <input type="text" placeholder="Search groups..." className="search-input" />
+                        <input
+                          type="text"
+                          placeholder="Search your groups..."
+                          className="search-input"
+                          value={groupSearchQuery}
+                          onChange={(e) => setGroupSearchQuery(e.target.value)}
+                        />
                       </div>
-                      <select className="category-select">
+                      <select className="category-select" disabled>
                         <option>All Categories</option>
                         <option>Books</option>
                         <option>Electronics</option>
@@ -710,11 +760,7 @@ function App() {
                                   <div key={idx} className={`member-avatar-compact ${['charcoal', 'slate', 'purple', 'light'][idx % 4]}`}>
                                     {member.name ? member.name.charAt(0).toUpperCase() : 'U'}
                                   </div>
-                                ))}
-                                {group.memberIds && group.memberIds.length > 4 && (
-                                  <div className="member-avatar-more-compact">+{group.memberIds.length - 4}</div>
                                 )}
-                                <span className="member-count-compact">{group.memberIds?.length || 0} members</span>
                               </div>
                               <div className="group-compact-stats">
                                 <div className="stat-with-icon">
@@ -723,18 +769,21 @@ function App() {
                                   </svg>
                                   <span><GroupItemCount groupName={group.name} /> items</span>
                                 </div>
-                                <div className="stat-with-icon">
+                                <p className="group-compact-desc">{group.description || 'No description'}</p>
+                              </div>
+                              <div className="group-compact-right">
+                                <button className="group-compact-view-btn" onClick={() => handleViewGroup(group._id)}>
+                                  View Group
                                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
-                                    <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
+                                    <polyline points="9 18 15 12 9 6" />
                                   </svg>
                                   <span><GroupItemCount groupName={group.name} type="loans" /> active loans</span>
                                 </div>
                               </div>
                             </div>
-                          </div>
-                        ))
-                      )}
+                          ))
+                        )
+                      })()}
                     </div>
                   </div>
 
@@ -871,7 +920,7 @@ function App() {
                             <polyline points="9 18 15 12 9 6" />
                           </svg>
                         </div>
-                        <div className="quick-action-card quick-action-explore">
+                        <div className="quick-action-card quick-action-explore" onClick={() => setCurrentPage('discover-groups')}>
                           <div className="quick-action-icon-container quick-action-icon-blue">
                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                               <circle cx="12" cy="12" r="10" />

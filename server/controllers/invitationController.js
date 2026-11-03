@@ -4,6 +4,15 @@ const User = require("../model/user.js");
 const Notification = require("../model/notification.js");
 const mongoose = require("mongoose");
 const { emitToUser } = require("../config/socket.js");
+const mongoose = require("mongoose");
+
+const isValidObjectId = (value) => mongoose.Types.ObjectId.isValid(value);
+
+const markInvitationNotificationRead = (invitationId, userId) =>
+  Notification.updateMany(
+    { recipientId: userId, "data.invitationId": invitationId },
+    { $set: { read: true } }
+  );
 
 const isValidId = value => mongoose.Types.ObjectId.isValid(value);
 
@@ -23,7 +32,7 @@ const createInvitationNotification = async ({ recipientId, senderId, type, title
 // Send an invitation to a user to join a group
 const sendInvitation = async (req, res, next) => {
   try {
-    const { groupId, inviteeId, message } = req.body;
+    const { groupId, invitedUserId, message } = req.body;
     const inviterId = req.user._id;
 
     if (!isValidId(groupId) || !isValidId(inviteeId)) {
@@ -46,13 +55,13 @@ const sendInvitation = async (req, res, next) => {
     }
 
     // Check if invitee exists
-    const invitee = await User.findById(inviteeId);
+    const invitee = await User.findById(invitedUserId);
     if (!invitee) {
       return res.status(404).json({ success: false, message: "Invited user not found" });
     }
 
     // Prevent adding if already a member
-    const alreadyMember = group.memberIds.some((id) => id.toString() === inviteeId.toString());
+    const alreadyMember = group.memberIds.some((id) => id.toString() === invitedUserId.toString());
     if (alreadyMember) {
       return res.status(400).json({ success: false, message: "User is already a member of this group" });
     }
@@ -60,7 +69,7 @@ const sendInvitation = async (req, res, next) => {
     // Check if duplicate pending invitation already exists
     const existingInvite = await Invitation.findOne({
       groupId,
-      inviteeId,
+      invitedUserId,
       status: "pending",
     });
 
@@ -100,7 +109,7 @@ const sendInvitation = async (req, res, next) => {
       message: `${req.user.name} invited you to join "${group.name}"`,
       data: { groupId: group._id, invitationId: invitation._id },
     });
-    emitToUser(inviteeId, "invitation:new", {
+    emitToUser(invitedUserId, "invitation:new", {
       invitationId: invitation._id,
       groupId: group._id,
       groupName: group.name,
@@ -114,6 +123,12 @@ const sendInvitation = async (req, res, next) => {
       data: invitation,
     });
   } catch (error) {
+    if (error.code === 11000) {
+      return res.status(409).json({
+        success: false,
+        message: "An invitation is already pending for this user",
+      });
+    }
     next(error);
   }
 };
@@ -151,7 +166,7 @@ const acceptInvitation = async (req, res, next) => {
     }
     const invitation = await Invitation.findById(req.params.id)
       .populate("groupId")
-      .populate("inviterId", "name");
+      .populate("invitedBy", "name");
 
     if (!invitation) {
       return res.status(404).json({ success: false, message: "Invitation not found" });
@@ -160,7 +175,7 @@ const acceptInvitation = async (req, res, next) => {
       return res.status(403).json({ success: false, message: "Only the group owner can approve membership requests" });
     }
 
-    if (invitation.inviteeId.toString() !== req.user._id.toString()) {
+    if (invitation.invitedUserId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Not authorized to accept this invitation" });
     }
 
@@ -211,7 +226,7 @@ const acceptInvitation = async (req, res, next) => {
       message: `${req.user.name} accepted your invitation to join "${group.name}"`,
       data: { groupId: group._id, invitationId: invitation._id },
     });
-    emitToUser(invitation.inviterId._id, "invitation:updated", {
+    emitToUser(invitation.invitedBy._id, "invitation:updated", {
       invitationId: invitation._id,
       groupId: group._id,
       status: updatedInvitation.status,
@@ -236,7 +251,7 @@ const rejectInvitation = async (req, res, next) => {
     }
     const invitation = await Invitation.findById(req.params.id)
       .populate("groupId")
-      .populate("inviterId", "name");
+      .populate("invitedBy", "name");
 
     if (!invitation) {
       return res.status(404).json({ success: false, message: "Invitation not found" });
@@ -245,7 +260,7 @@ const rejectInvitation = async (req, res, next) => {
       return res.status(403).json({ success: false, message: "Only the group owner can reject membership requests" });
     }
 
-    if (invitation.inviteeId.toString() !== req.user._id.toString()) {
+    if (invitation.invitedUserId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Not authorized to respond to this invitation" });
     }
 
@@ -271,7 +286,7 @@ const rejectInvitation = async (req, res, next) => {
       message: `${req.user.name} declined the invitation to join "${invitation.groupId.name}"`,
       data: { groupId: invitation.groupId._id, invitationId: invitation._id },
     });
-    emitToUser(invitation.inviterId._id, "invitation:updated", {
+    emitToUser(invitation.invitedBy._id, "invitation:updated", {
       invitationId: invitation._id,
       groupId: invitation.groupId._id,
       status: updatedInvitation.status,

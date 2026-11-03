@@ -14,6 +14,7 @@ const { protect } = require("../middleware/authMiddleware.js");
 const router = express.Router();
 
 router.post("/", protect, sendInvitation);
+router.get("/", protect, getMyInvitations);
 router.get("/me", protect, getMyInvitations);
 router.post("/requests", protect, requestToJoinGroup);
 router.get("/owner-requests", protect, getOwnerRequests);

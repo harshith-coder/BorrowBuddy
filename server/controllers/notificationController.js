@@ -4,6 +4,8 @@ const getMyNotifications = async (req, res, next) => {
   try {
     const notifications = await Notification.find({ recipientId: req.user._id })
       .populate("senderId", "name email avatar")
+      .populate("data.groupId", "name")
+      .populate("data.invitationId", "status")
       .sort({ createdAt: -1 })
       .limit(50);
 
@@ -60,4 +62,3 @@ module.exports = {
   markAsRead,
   markAllAsRead,
 };
-
