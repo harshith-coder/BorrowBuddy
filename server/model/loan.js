@@ -5,7 +5,6 @@ const loanSchema = new mongoose.Schema(
     groupId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Group",
-      required: [true, "Loan must belong to a group"],
       index: true,
     },
     itemId: {
@@ -20,14 +19,18 @@ const loanSchema = new mongoose.Schema(
       required: [true, "Loan must have a borrower"],
       index: true,
     },
+    lenderId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      required: true,
+      index: true,
+    },
     checkoutDate: {
       type: Date,
-      required: [true, "Checkout date is required"],
       default: Date.now,
     },
     dueDate: {
       type: Date,
-      required: [true, "Due date is required"],
     },
     returnDate: {
       type: Date,
@@ -39,8 +42,8 @@ const loanSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["active", "returned", "overdue"],
-      default: "active",
+      enum: ["requested", "booked", "active", "returned", "rejected", "cancelled"],
+      default: "requested",
       index: true,
     },
   },

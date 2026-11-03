@@ -1,8 +1,6 @@
 const Group = require("../model/group.js");
 const BorrowableItem = require("../model/borrowableItem.js");
 const Loan = require("../model/loan.js");
-const User = require("../model/user.js");
-const mongoose = require("mongoose");
 
 const isGroupMember = (group, userId) =>
   group.ownerId.toString() === userId.toString() ||
@@ -14,7 +12,7 @@ const isManager = (group, userId) =>
 
 const createGroup = async (req, res, next) => {
   try {
-    const { name, description, categories, members } = req.body;
+    const { name, description, categories } = req.body;
 
     if (!name || !name.trim()) {
       return res.status(400).json({
@@ -23,27 +21,23 @@ const createGroup = async (req, res, next) => {
       });
     }
 
-    const parsedCategories = categories ? JSON.parse(categories) : [];
-    const parsedMembers = members ? JSON.parse(members) : [];
-
-    // For now, use a dummy user ID if no auth
-    const userId = req.user ? req.user._id : new mongoose.Types.ObjectId();
-
-    // Add current user to members if not already included
-    const allMemberIds = [...new Set([userId.toString(), ...parsedMembers])];
+    const parsedCategories = Array.isArray(categories)
+      ? categories
+      : (categories ? JSON.parse(categories) : []);
+    const userId = req.user._id;
 
     const groupData = {
       name: name.trim(),
       description: description ? description.trim() : "",
       categories: parsedCategories,
       ownerId: userId,
-      memberIds: allMemberIds,
+      memberIds: [userId],
       managerIds: [userId],
     };
 
     // Handle image upload if file is present
     if (req.file) {
-      groupData.image = req.file.path;
+      groupData.image = `uploads/${req.file.filename}`;
     }
 
     const group = await Group.create(groupData);
@@ -69,66 +63,6 @@ const getGroups = async (req, res, next) => {
     res.status(200).json({
       success: true,
       data: groups,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
-const addGroupMember = async (req, res, next) => {
-  try {
-    const { userId } = req.body || {};
-
-    if (!userId) {
-      return res.status(400).json({
-        success: false,
-        message: "User ID is required",
-      });
-    }
-
-    const group = await Group.findById(req.params.id);
-
-    if (!group) {
-      return res.status(404).json({
-        success: false,
-        message: "Group not found",
-      });
-    }
-
-    if (!isManager(group, req.user._id)) {
-      return res.status(403).json({
-        success: false,
-        message: "Only a group manager can add members",
-      });
-    }
-
-    const user = await User.findById(userId);
-
-    if (!user) {
-      return res.status(404).json({
-        success: false,
-        message: "User not found",
-      });
-    }
-
-    const alreadyMember = group.memberIds.some(
-      (memberId) => memberId.toString() === userId.toString()
-    );
-
-    if (alreadyMember) {
-      return res.status(400).json({
-        success: false,
-        message: "User is already a group member",
-      });
-    }
-
-    group.memberIds.push(user._id);
-    await group.save();
-
-    res.status(200).json({
-      success: true,
-      message: "Member added successfully",
-      data: group,
     });
   } catch (error) {
     next(error);
@@ -182,7 +116,13 @@ const getGroupItems = async (req, res, next) => {
     }
 
     const { search, category, status } = req.query;
-    const query = { groupId: group._id };
+    const query = {
+      $or: [
+        { ownerId: req.user._id, sharingType: "all" },
+        { sharedWithGroups: group._id },
+        { groupId: group._id },
+      ],
+    };
 
     if (search) {
       query.name = { $regex: search, $options: "i" };
@@ -234,6 +174,9 @@ const addItem = async (req, res, next) => {
       name: name.trim(),
       category: category.trim(),
       description: description ? description.trim() : "",
+      ownerId: req.user._id,
+      sharingType: "selected",
+      sharedWithGroups: [group._id],
       status: "available",
     });
 
@@ -381,7 +324,6 @@ const getGroupLoans = async (req, res, next) => {
 module.exports = {
   createGroup,
   getGroups,
-  addGroupMember,
   getGroupMembers,
   getGroupItems,
   addItem,

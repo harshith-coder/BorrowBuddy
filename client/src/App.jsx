@@ -1,6 +1,27 @@
 import { useState, useEffect } from 'react'
+import { io } from 'socket.io-client'
 import heroImage from './assets/hero-image.png'
 import './App.css'
+
+const API_BASE = 'http://localhost:3000/api'
+const SERVER_BASE = 'http://localhost:3000'
+
+async function apiRequest(path, options = {}) {
+  const token = localStorage.getItem('token')
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(options.headers || {}),
+      Authorization: `Bearer ${token}`,
+    },
+  })
+  const data = await response.json()
+  if (!response.ok || !data.success) {
+    throw new Error(data.message || 'Request failed')
+  }
+  return data
+}
 
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -11,20 +32,40 @@ function App() {
   const [signupData, setSignupData] = useState({ name: '', email: '', password: '' })
   const [loginData, setLoginData] = useState({ email: '', password: '' })
   const [authMessage, setAuthMessage] = useState({ type: '', text: '' })
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [user, setUser] = useState(null)
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(localStorage.getItem('token')))
+  const [user, setUser] = useState(() => {
+    const storedUser = localStorage.getItem('user')
+    return storedUser ? JSON.parse(storedUser) : null
+  })
   const [currentPage, setCurrentPage] = useState('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [groupName, setGroupName] = useState('')
   const [groupDescription, setGroupDescription] = useState('')
   const [groupImage, setGroupImage] = useState(null)
   const [selectedCategories, setSelectedCategories] = useState([])
-  const [selectedMembers, setSelectedMembers] = useState([])
   const [memberSearchQuery, setMemberSearchQuery] = useState('')
   const [profileImage, setProfileImage] = useState(null)
   const [groups, setGroups] = useState([])
   const [availableMembers, setAvailableMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
+  const [items, setItems] = useState([])
+  const [loans, setLoans] = useState([])
+  const [notifications, setNotifications] = useState([])
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [invitations, setInvitations] = useState([])
+  const [showItemModal, setShowItemModal] = useState(false)
+  const [itemImage, setItemImage] = useState(null)
+  const [itemForm, setItemForm] = useState({
+    name: '',
+    category: 'General',
+    description: '',
+    sharingType: 'all',
+    sharedWithGroups: [],
+  })
+  const [dataLoading, setDataLoading] = useState(false)
+  const [dataError, setDataError] = useState('')
+  const [membersGroup, setMembersGroup] = useState(null)
+  const [groupMembers, setGroupMembers] = useState([])
 
   const categories = [
     { id: 'books', name: 'Books', icon: '📚' },
@@ -67,59 +108,6 @@ function App() {
     )
   }
 
-  const handleCreateGroupLegacy = async () => {
-    if (!groupName.trim()) {
-      alert('Please enter a group name')
-      return
-    }
-
-    const selectedMemberData = availableMembers.filter(m => m.selected)
-    if (selectedMemberData.length === 0) {
-      alert('Please select at least one member')
-      return
-    }
-
-    const formData = new FormData()
-    formData.append('name', groupName)
-    formData.append('description', groupDescription)
-    formData.append('categories', JSON.stringify(selectedCategories))
-    formData.append('members', JSON.stringify(selectedMemberData.map(m => m.id)))
-    if (groupImage) {
-      formData.append('image', groupImage)
-    }
-
-    try {
-      const token = localStorage.getItem('token')
-      const response = await fetch('http://localhost:3000/api/groups', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-        body: formData,
-      })
-
-      const data = await response.json()
-      if (data.success) {
-        // Reset form
-        setGroupName('')
-        setGroupDescription('')
-        setGroupImage(null)
-        setSelectedCategories([])
-        setAvailableMembers(prev => prev.map(m => ({ ...m, selected: false })))
-        setMemberSearchQuery('')
-        
-        // Navigate to my-groups and refresh
-        setCurrentPage('my-groups')
-        fetchGroups()
-      } else {
-        alert(data.message || 'Failed to create group')
-      }
-    } catch (error) {
-      console.error('Error creating group:', error)
-      alert('Failed to create group')
-    }
-  }
-
   const handleCreateGroup = async () => {
     if (!groupName.trim()) {
       alert('Please enter a group name')
@@ -127,20 +115,20 @@ function App() {
     }
 
     const selectedMemberData = availableMembers.filter(member => member.selected)
-    if (selectedMemberData.length === 0) {
-      alert('Please select at least one member')
-      return
-    }
-
     try {
       const token = localStorage.getItem('token')
+      const formData = new FormData()
+      formData.append('name', groupName.trim())
+      formData.append('description', groupDescription.trim())
+      formData.append('categories', JSON.stringify(selectedCategories))
+      if (groupImage) formData.append('image', groupImage)
+
       const groupResponse = await fetch('http://localhost:3000/api/groups', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ name: groupName.trim() }),
+        body: formData,
       })
       const groupData = await groupResponse.json()
 
@@ -150,20 +138,23 @@ function App() {
 
       for (const member of selectedMemberData) {
         const memberResponse = await fetch(
-          `http://localhost:3000/api/groups/${groupData.data._id}/members`,
+          'http://localhost:3000/api/invitations',
           {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ userId: member.id }),
+            body: JSON.stringify({
+              groupId: groupData.data._id,
+              inviteeId: member.id,
+            }),
           }
         )
         const memberData = await memberResponse.json()
 
         if (!memberResponse.ok || !memberData.success) {
-          throw new Error(memberData.message || `Failed to add ${member.name}`)
+          throw new Error(memberData.message || `Failed to invite ${member.name}`)
         }
       }
 
@@ -174,22 +165,11 @@ function App() {
       setAvailableMembers(prev => prev.map(member => ({ ...member, selected: false })))
       setMemberSearchQuery('')
       setCurrentPage('my-groups')
-      fetchGroups()
     } catch (error) {
       console.error('Error creating group:', error)
       alert(error.message || 'Failed to create group')
     }
   }
-
-  // Check if user is already logged in
-  useEffect(() => {
-    const token = localStorage.getItem('token')
-    const userData = localStorage.getItem('user')
-    if (token && userData) {
-      setIsAuthenticated(true)
-      setUser(JSON.parse(userData))
-    }
-  }, [])
 
   useEffect(() => {
     if (currentPage !== 'create-group' || !isAuthenticated) return
@@ -229,14 +209,7 @@ function App() {
     fetchUsers()
   }, [currentPage, isAuthenticated])
 
-  // Fetch groups when on my-groups page
-  useEffect(() => {
-    if (currentPage === 'my-groups' && isAuthenticated) {
-      fetchGroups()
-    }
-  }, [currentPage, isAuthenticated])
-
-  const fetchGroups = async () => {
+  async function fetchGroups() {
     try {
       const token = localStorage.getItem('token')
       const response = await fetch('http://localhost:3000/api/groups', {
@@ -246,79 +219,173 @@ function App() {
       })
       const data = await response.json()
       if (data.success) {
-        // If no groups from backend, show default groups
-        if (data.data.length === 0) {
-          setGroups([
-            {
-              _id: 'default-1',
-              name: 'Friends Group',
-              description: 'Share and borrow everyday items with friends.',
-              categories: ['Books', 'Chargers', 'Sports Equipment'],
-              memberIds: [
-                { name: 'Madhu' },
-                { name: 'Sri' },
-                { name: 'Priya' },
-                { name: 'Anil' },
-                { name: 'Rahul' }
-              ],
-              image: null
-            },
-            {
-              _id: 'default-2',
-              name: 'College Group',
-              description: 'Share lab equipment and project tools with college mates',
-              categories: ['Lab Equipment', 'Project Tools'],
-              memberIds: [
-                { name: 'Sri' },
-                { name: 'Venkat' },
-                { name: 'Rahul' },
-                { name: 'Anil' },
-                { name: 'Kiran' },
-                { name: 'Teja' }
-              ],
-              image: null
-            }
-          ])
-        } else {
-          setGroups(data.data)
-        }
+        setGroups(data.data)
       }
     } catch (error) {
       console.error('Error fetching groups:', error)
-      // On error, show default groups
-      setGroups([
-        {
-          _id: 'default-1',
-          name: 'Friends Group',
-          description: 'Share and borrow everyday items with friends.',
-          categories: ['Books', 'Chargers', 'Sports Equipment'],
-          memberIds: [
-            { name: 'Madhu' },
-            { name: 'Sri' },
-            { name: 'Priya' },
-            { name: 'Anil' },
-            { name: 'Rahul' }
-          ],
-          image: null
-        },
-        {
-          _id: 'default-2',
-          name: 'College Group',
-          description: 'Share lab equipment and project tools with college mates',
-          categories: ['Lab Equipment', 'Project Tools'],
-          memberIds: [
-            { name: 'Sri' },
-            { name: 'Venkat' },
-            { name: 'Rahul' },
-            { name: 'Anil' },
-            { name: 'Kiran' },
-            { name: 'Teja' }
-          ],
-          image: null
-        }
-      ])
+      setGroups([])
     }
   }
+
+  async function fetchItems() {
+    const data = await apiRequest('/items')
+    setItems(data.data)
+  }
+
+  async function fetchLoans() {
+    const data = await apiRequest('/loans')
+    setLoans(data.data)
+  }
+
+  async function fetchNotifications() {
+    const data = await apiRequest('/notifications')
+    setNotifications(data.data)
+    setUnreadCount(data.unreadCount)
+  }
+
+  async function fetchInvitations() {
+    const data = await apiRequest('/invitations/me')
+    setInvitations(data.data)
+  }
+
+  async function loadPageData(page) {
+    setDataLoading(true)
+    setDataError('')
+    try {
+      if (page === 'inventory') await fetchItems()
+      if (page === 'loans' || page === 'history') await fetchLoans()
+      if (page === 'invitations') await fetchInvitations()
+      if (page === 'dashboard') await Promise.all([fetchItems(), fetchLoans(), fetchGroups()])
+      await fetchNotifications()
+    } catch (error) {
+      console.error(`Error loading ${page} data:`, error)
+      setDataError(error.message)
+    } finally {
+      setDataLoading(false)
+    }
+  }
+
+  const handleCreateItem = async (event) => {
+    event.preventDefault()
+    setDataError('')
+    try {
+      const formData = new FormData()
+      formData.append('name', itemForm.name.trim())
+      formData.append('category', itemForm.category)
+      formData.append('description', itemForm.description.trim())
+      formData.append('sharingType', itemForm.sharingType)
+      formData.append('sharedWithGroups', JSON.stringify(itemForm.sharedWithGroups))
+      if (itemImage) formData.append('image', itemImage)
+      await apiRequest('/items', { method: 'POST', body: formData })
+      setItemForm({ name: '', category: 'General', description: '', sharingType: 'all', sharedWithGroups: [] })
+      setItemImage(null)
+      setShowItemModal(false)
+      await fetchItems()
+    } catch (error) {
+      setDataError(error.message)
+    }
+  }
+
+  const handleBorrow = async (itemId) => {
+    try {
+      await apiRequest('/loans', { method: 'POST', body: JSON.stringify({ itemId }) })
+      await Promise.all([fetchItems(), fetchLoans()])
+    } catch (error) {
+      setDataError(error.message)
+    }
+  }
+
+  const handleLoanAction = async (loanId, action) => {
+    try {
+      await apiRequest(`/loans/${loanId}/${action}`, { method: 'PATCH' })
+      await Promise.all([fetchItems(), fetchLoans()])
+    } catch (error) {
+      setDataError(error.message)
+    }
+  }
+
+  const handleInvitation = async (invitationId, action) => {
+    try {
+      await apiRequest(`/invitations/${invitationId}/${action}`, { method: 'PATCH' })
+      await Promise.all([fetchInvitations(), fetchGroups(), fetchNotifications()])
+    } catch (error) {
+      setDataError(error.message)
+    }
+  }
+
+  const handleMarkNotificationRead = async (notificationId) => {
+    try {
+      await apiRequest(`/notifications/${notificationId}/read`, { method: 'PATCH' })
+      await fetchNotifications()
+    } catch (error) {
+      setDataError(error.message)
+    }
+  }
+
+  const handleMarkAllNotificationsRead = async () => {
+    try {
+      await apiRequest('/notifications/read-all', { method: 'PATCH' })
+      await fetchNotifications()
+    } catch (error) {
+      setDataError(error.message)
+    }
+  }
+
+  const handleViewMembers = async (group) => {
+    try {
+      const data = await apiRequest(`/groups/${group._id}/members`)
+      setGroupMembers(data.data)
+      setMembersGroup(group)
+    } catch (error) {
+      setDataError(error.message)
+    }
+  }
+
+  const imageUrl = (imagePath) => imagePath ? `${SERVER_BASE}/${imagePath}` : ''
+
+  useEffect(() => {
+    if (isAuthenticated) {
+      const timer = window.setTimeout(() => loadPageData(currentPage), 0)
+      return () => window.clearTimeout(timer)
+    }
+    // The loader is intentionally scheduled after render for the active page.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, isAuthenticated])
+
+  // Fetch groups when on my-groups page
+  useEffect(() => {
+    if (currentPage === 'my-groups' && isAuthenticated) {
+      const timer = window.setTimeout(fetchGroups, 0)
+      return () => window.clearTimeout(timer)
+    }
+  }, [currentPage, isAuthenticated])
+
+  useEffect(() => {
+    if (!isAuthenticated) return undefined
+
+    const socket = io(SERVER_BASE, {
+      auth: { token: localStorage.getItem('token') },
+    })
+    const refreshInvitations = () => {
+      fetchInvitations().catch((error) => {
+        console.error('Error refreshing invitations:', error)
+        setDataError(error.message)
+      })
+      fetchNotifications().catch((error) => {
+        console.error('Error refreshing notifications:', error)
+        setDataError(error.message)
+      })
+    }
+
+    socket.on('invitation:new', refreshInvitations)
+    socket.on('invitation:updated', refreshInvitations)
+    socket.on('notification:new', refreshInvitations)
+    socket.on('connect_error', (error) => {
+      console.error('Realtime connection failed:', error.message)
+    })
+
+    return () => socket.disconnect()
+  }, [isAuthenticated])
 
   const handleSignup = async (e) => {
     e.preventDefault()
@@ -455,6 +522,20 @@ function App() {
                 </svg>
                 History
               </a>
+              <a href="#" className={`sidebar-link ${currentPage === 'invitations' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('invitations') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 4h16v16H4z" />
+                  <path d="M4 7l8 5 8-5" />
+                </svg>
+                Invitations
+              </a>
+              <a href="#" className={`sidebar-link ${currentPage === 'notifications' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('notifications') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                Notifications {unreadCount > 0 && `(${unreadCount})`}
+              </a>
               <a href="#" className={`sidebar-link ${currentPage === 'profile' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('profile') }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
@@ -502,7 +583,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">12</div>
+                      <div className="stat-value">{items.length}</div>
                       <div className="stat-label">Total Items</div>
                     </div>
                   </div>
@@ -517,7 +598,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">3</div>
+                      <div className="stat-value">{loans.filter(loan => ['requested', 'booked', 'active'].includes(loan.status)).length}</div>
                       <div className="stat-label">Active Loans</div>
                     </div>
                   </div>
@@ -530,7 +611,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">1</div>
+                      <div className="stat-value">{loans.filter(loan => loan.dueDate && new Date(loan.dueDate) < new Date() && !['returned', 'rejected'].includes(loan.status)).length}</div>
                       <div className="stat-label">Overdue</div>
                     </div>
                   </div>
@@ -545,7 +626,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">2</div>
+                      <div className="stat-value">{groups.length}</div>
                       <div className="stat-label">Groups</div>
                     </div>
                   </div>
@@ -698,7 +779,7 @@ function App() {
                               <p className="group-compact-desc">{group.description || 'No description'}</p>
                             </div>
                             <div className="group-compact-right">
-                              <button className="group-compact-view-btn">
+                              <button className="group-compact-view-btn" onClick={() => handleViewMembers(group)}>
                                 View Group
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                   <polyline points="9 18 15 12 9 6" />
@@ -1086,6 +1167,85 @@ function App() {
               </>
             )}
 
+            {currentPage === 'inventory' && (
+              <>
+                <header className="dashboard-header">
+                  <div className="header-content">
+                    <h1 className="dashboard-greeting">Inventory</h1>
+                    <p className="dashboard-subtitle">Browse items shared with your groups and manage your own items.</p>
+                  </div>
+                  <button className="create-group-btn" onClick={() => setShowItemModal(true)}>+ Add Item</button>
+                </header>
+                {dataError && <div className="auth-message error">{dataError}</div>}
+                {dataLoading ? <div className="no-groups-message"><p>Loading inventory...</p></div> : (
+                  <div className="inventory-grid">
+                    {items.length === 0 ? <div className="no-groups-message"><p>No accessible items yet.</p></div> : items.map(item => (
+                      <article className="item-card" key={item._id}>
+                        <div className="item-card-image-box">
+                          {item.imageUrl ? <img className="item-card-image" src={imageUrl(item.imageUrl)} alt={item.name} /> : <div className="item-card-placeholder"><span>📦</span><span>No image</span></div>}
+                          <span className={`item-card-status-badge badge-${item.status}`}>{item.status}</span>
+                        </div>
+                        <div className="item-card-content">
+                          <h3 className="item-card-title">{item.name}</h3>
+                          <span className="item-card-category">{item.category}</span>
+                          <p className="item-card-desc">{item.description || 'No description provided.'}</p>
+                          <div className="item-card-meta"><span>Owner: {item.ownerId?.name || 'You'}</span></div>
+                          <button className="btn-borrow" disabled={item.status !== 'available' || item.ownerId?._id === user?._id} onClick={() => handleBorrow(item._id)}>
+                            {item.ownerId?._id === user?._id ? 'Your item' : item.status === 'available' ? 'Request to borrow' : item.status}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {(currentPage === 'loans' || currentPage === 'history') && (
+              <>
+                <header className="dashboard-header">
+                  <div className="header-content">
+                    <h1 className="dashboard-greeting">{currentPage === 'loans' ? 'Loans' : 'Loan History'}</h1>
+                    <p className="dashboard-subtitle">Track requests, active loans, and returns.</p>
+                  </div>
+                </header>
+                {dataError && <div className="auth-message error">{dataError}</div>}
+                <div className="loans-table-wrapper">
+                  <table className="loans-table">
+                    <thead><tr><th>Item</th><th>Role</th><th>Other party</th><th>Status</th><th>Due</th><th>Action</th></tr></thead>
+                    <tbody>
+                      {loans.filter(loan => currentPage === 'history' ? ['returned', 'rejected', 'cancelled'].includes(loan.status) : !['returned', 'rejected', 'cancelled'].includes(loan.status)).map(loan => {
+                        const borrower = loan.borrowerId?._id === user?._id
+                        const otherParty = borrower ? loan.lenderId?.name : loan.borrowerId?.name
+                        const action = loan.status === 'requested' && !borrower ? 'approve' : loan.status === 'requested' && borrower ? 'reject' : loan.status === 'booked' || loan.status === 'active' ? 'return' : null
+                        return <tr key={loan._id}><td>{loan.itemId?.name || 'Item'}</td><td>{borrower ? 'Borrower' : 'Owner'}</td><td>{otherParty || '—'}</td><td>{loan.status}</td><td>{loan.dueDate ? new Date(loan.dueDate).toLocaleDateString() : '—'}</td><td>{action && <button className="btn-borrow" onClick={() => handleLoanAction(loan._id, action)}>{action}</button>}{loan.status === 'requested' && !borrower && <button className="btn-cancel" onClick={() => handleLoanAction(loan._id, 'reject')}>Reject</button>}</td></tr>
+                      })}
+                    </tbody>
+                  </table>
+                  {loans.filter(loan => currentPage === 'history' ? ['returned', 'rejected', 'cancelled'].includes(loan.status) : !['returned', 'rejected', 'cancelled'].includes(loan.status)).length === 0 && <div className="no-groups-message"><p>No loans to show.</p></div>}
+                </div>
+              </>
+            )}
+
+            {currentPage === 'invitations' && (
+              <>
+                <header className="dashboard-header"><div className="header-content"><h1 className="dashboard-greeting">Invitations</h1><p className="dashboard-subtitle">Accept or decline invitations before joining a group.</p></div></header>
+                {dataError && <div className="auth-message error">{dataError}</div>}
+                <div className="loans-table-wrapper"><table className="loans-table"><thead><tr><th>Group</th><th>Invited by</th><th>Status</th><th>Action</th></tr></thead><tbody>
+                  {invitations.map(invitation => <tr key={invitation._id}><td>{invitation.groupId?.name || 'Group'}</td><td>{invitation.inviterId?.name || 'Member'}</td><td>{invitation.status}</td><td>{invitation.status === 'pending' && <><button className="btn-borrow" onClick={() => handleInvitation(invitation._id, 'accept')}>Accept</button><button className="btn-cancel" onClick={() => handleInvitation(invitation._id, 'reject')}>Decline</button></>}</td></tr>)}
+                </tbody></table>{invitations.length === 0 && <div className="no-groups-message"><p>No invitations.</p></div>}</div>
+              </>
+            )}
+
+            {currentPage === 'notifications' && (
+              <>
+                <header className="dashboard-header"><div className="header-content"><h1 className="dashboard-greeting">Notifications</h1><p className="dashboard-subtitle">Stay updated on invitations, borrow requests, and returns.</p></div><button className="btn-mark-all" onClick={handleMarkAllNotificationsRead}>Mark all as read</button></header>
+                <div className="notification-list">
+                  {notifications.length === 0 ? <div className="no-notifications">No notifications.</div> : notifications.map(notification => <div key={notification._id} className={`notification-item ${notification.read ? '' : 'unread'}`} onClick={() => !notification.read && handleMarkNotificationRead(notification._id)}><div className="notification-icon">!</div><div className="notification-content"><div className="notification-item-title">{notification.title}</div><div className="notification-item-msg">{notification.message}</div><div className="notification-item-time">{new Date(notification.createdAt).toLocaleString()}</div></div></div>)}
+                </div>
+              </>
+            )}
+
             {currentPage === 'profile' && (
               <>
                 <header className="dashboard-header">
@@ -1158,6 +1318,30 @@ function App() {
                   </div>
                 </div>
               </>
+            )}
+
+            {showItemModal && (
+              <div className="app-modal-overlay" onClick={(event) => event.target === event.currentTarget && setShowItemModal(false)}>
+                <form className="app-modal-card" onSubmit={handleCreateItem}>
+                  <div className="app-modal-header"><h2 className="app-modal-title">Add Inventory Item</h2><button type="button" className="app-modal-close" onClick={() => setShowItemModal(false)}>×</button></div>
+                  <div className="app-modal-body">
+                    {dataError && <div className="auth-message error">{dataError}</div>}
+                    <label className="form-group"><span className="form-label">Name *</span><input className="form-input" required value={itemForm.name} onChange={(event) => setItemForm({ ...itemForm, name: event.target.value })} /></label>
+                    <label className="form-group"><span className="form-label">Category</span><input className="form-input" value={itemForm.category} onChange={(event) => setItemForm({ ...itemForm, category: event.target.value })} /></label>
+                    <label className="form-group"><span className="form-label">Description</span><textarea className="form-textarea" value={itemForm.description} onChange={(event) => setItemForm({ ...itemForm, description: event.target.value })} /></label>
+                    <label className="form-group"><span className="form-label">Image (PNG/JPG/WebP, max 3MB)</span><input type="file" accept="image/png,image/jpeg,image/webp" onChange={(event) => setItemImage(event.target.files?.[0] || null)} /></label>
+                    <label className="form-group"><span className="form-label">Sharing</span><select className="form-input" value={itemForm.sharingType} onChange={(event) => setItemForm({ ...itemForm, sharingType: event.target.value })}><option value="all">All my groups</option><option value="selected">Selected groups</option></select></label>
+                    {itemForm.sharingType === 'selected' && <div className="form-group"><span className="form-label">Groups</span>{groups.map(group => <label key={group._id} className="member-item"><span>{group.name}</span><input type="checkbox" checked={itemForm.sharedWithGroups.includes(group._id)} onChange={(event) => setItemForm({ ...itemForm, sharedWithGroups: event.target.checked ? [...itemForm.sharedWithGroups, group._id] : itemForm.sharedWithGroups.filter(id => id !== group._id) })} /></label>)}</div>}
+                  </div>
+                  <div className="app-modal-footer"><button type="button" className="btn-cancel" onClick={() => setShowItemModal(false)}>Cancel</button><button type="submit" className="btn-create">Save Item</button></div>
+                </form>
+              </div>
+            )}
+
+            {membersGroup && (
+              <div className="app-modal-overlay" onClick={(event) => event.target === event.currentTarget && setMembersGroup(null)}>
+                <div className="app-modal-card"><div className="app-modal-header"><h2 className="app-modal-title">{membersGroup.name} members</h2><button className="app-modal-close" onClick={() => setMembersGroup(null)}>×</button></div><div className="app-modal-body">{groupMembers.map(member => <div className="member-list-item" key={member._id}><div className="member-info-group"><div className="member-avatar">{member.name?.charAt(0).toUpperCase()}</div><span>{member.name}</span></div><span>{member.email}</span></div>)}</div></div>
+              </div>
             )}
           </main>
         </div>

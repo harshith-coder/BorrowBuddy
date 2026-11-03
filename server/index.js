@@ -1,16 +1,46 @@
 const express = require("express");
 const cors = require("cors");
+const http = require("http");
+const { Server } = require("socket.io");
+const jwt = require("jsonwebtoken");
 const { Constants } = require("./config/constants.js");
 const { dbConnect } = require("./config/database.js");
+const { setSocketServer } = require("./config/socket.js");
 
-const authRoutes = require("./Routes/authRoutes.js");
-const groupRoutes = require("./Routes/groupRoutes.js");
-const itemRoutes = require("./Routes/itemRoutes.js");
-const loanRoutes = require("./Routes/loanRoutes.js");
+const authRoutes = require("./routes/authRoutes.js");
+const groupRoutes = require("./routes/groupRoutes.js");
+const itemRoutes = require("./routes/itemRoutes.js");
+const loanRoutes = require("./routes/loanRoutes.js");
+const invitationRoutes = require("./routes/invitationRoutes.js");
+const notificationRoutes = require("./routes/notificationRoutes.js");
 
 const { notFound, errorHandler } = require("./middleware/errorMiddleware.js");
 
 const app = express();
+const httpServer = http.createServer(app);
+const io = new Server(httpServer, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+});
+
+io.use((socket, next) => {
+  const token = socket.handshake.auth && socket.handshake.auth.token;
+  if (!token) return next(new Error("Authentication required"));
+
+  try {
+    socket.userId = jwt.verify(token, Constants.JWT_SECRET).id;
+    next();
+  } catch (error) {
+    next(new Error("Invalid authentication token"));
+  }
+});
+
+io.on("connection", (socket) => {
+  socket.join(`user:${socket.userId}`);
+});
+setSocketServer(io);
 
 app.use(cors({
   origin: "*",
@@ -32,6 +62,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/groups", groupRoutes);
 app.use("/api/items", itemRoutes);
 app.use("/api/loans", loanRoutes);
+app.use("/api/invitations", invitationRoutes);
+app.use("/api/notifications", notificationRoutes);
 
 // Serve static files from uploads directory
 app.use('/uploads', express.static('uploads'));
@@ -45,6 +77,6 @@ app.get("/", (req, res) => {
 app.use(notFound);
 app.use(errorHandler);
 
-app.listen(Constants.PORT, Constants.HOST, () => {
+httpServer.listen(Constants.PORT, Constants.HOST, () => {
   console.log(`Server running at http://${Constants.HOST}:${Constants.PORT}`);
 });
