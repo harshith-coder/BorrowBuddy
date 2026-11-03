@@ -1245,15 +1245,6 @@ function App() {
             A simple and organized way to manage shared items
             within your community, team, or classroom.
           </p>
-          <div className="hero-buttons">
-            <button className="btn-get-started" id="btn-get-started">
-              Get Started
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 12h14M13 6l6 6-6 6" />
-              </svg>
-            </button>
-            <button className="btn-learn-more" id="btn-learn-more">Learn More</button>
-          </div>
           <div className="why-heading">
             <span className="why-line"></span>
             <span className="why-text">WHY THIS PRODUCT EXISTS?</span>
@@ -1264,14 +1255,25 @@ function App() {
             easier, reduce unnecessary purchases, and build a
             culture of trust, sustainability and community.
           </p>
+          <div className="hero-buttons">
+            <button className="btn-get-started" id="btn-get-started" onClick={() => setShowSignup(true)}>
+              Get Started
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            </button>
+            <button className="btn-learn-more" id="btn-learn-more">Learn More</button>
+          </div>
         </div>
 
         <div className="hero-image-wrapper">
-          <img
-            src={heroImage}
-            alt="Shared items including a laptop, headphones, projector, plant, and desk lamp arranged on a navy desk"
-            className="hero-image"
-          />
+          <div className="hero-image-frame">
+            <img
+              src={heroImage}
+              alt="Shared items including a laptop, headphones, projector, plant, and desk lamp arranged on a navy desk"
+              className="hero-image"
+            />
+          </div>
         </div>
       </section>
 
