@@ -2,10 +2,12 @@ import { useState, useEffect } from 'react'
 import heroImage from './assets/hero-image.png'
 import './App.css'
 import ViewGroup from './components/ViewGroup'
-import GroupRecordsPage from './components/GroupRecordsPage'
+import Inventory from './components/Inventory/Inventory'
+import GroupItemCount from './components/Inventory/GroupItemCount'
+import MockRequestNotifications from './components/Inventory/MockRequestNotifications'
+import { BorrowBuddyProvider } from './context/BorrowBuddyContext'
 
 const API_BASE = 'http://localhost:3000/api'
-const SERVER_BASE = 'http://localhost:3000'
 
 async function apiRequest(path, options = {}) {
   const token = localStorage.getItem('token')
@@ -49,12 +51,10 @@ function App() {
   const [availableMembers, setAvailableMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
   const [selectedGroupId, setSelectedGroupId] = useState(null)
-  const [items, setItems] = useState([])
   const [loans, setLoans] = useState([])
   const [notifications, setNotifications] = useState([])
   const [unreadCount, setUnreadCount] = useState(0)
   const [invitations, setInvitations] = useState([])
-  const [dataLoading, setDataLoading] = useState(false)
   const [dataError, setDataError] = useState('')
 
   const categories = [
@@ -231,21 +231,15 @@ function App() {
     setCurrentPage('view-group')
   }
 
-  const imageUrl = (imagePath) => imagePath ? `${SERVER_BASE}/${imagePath}` : ''
-
   const loadPageData = async (page) => {
     if (!isAuthenticated) return
-    setDataLoading(true)
     setDataError('')
     try {
-      if (page === 'inventory') {
-        const data = await apiRequest('/items')
-        setItems(data.data || [])
-      } else if (page === 'loans' || page === 'history') {
+      if (page === 'loans' || page === 'history') {
         const data = await apiRequest('/loans')
         setLoans(data.data || [])
       } else if (page === 'invitations') {
-        const data = await apiRequest('/invitations')
+        const data = await apiRequest('/invitations/me')
         setInvitations(data.data || [])
       } else if (page === 'notifications') {
         const data = await apiRequest('/notifications')
@@ -256,28 +250,15 @@ function App() {
     } catch (error) {
       console.error(`Error loading ${page}:`, error)
       setDataError(error.message || 'Could not load data')
-    } finally {
-      setDataLoading(false)
     }
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => loadPageData(currentPage), 0)
+    const pageToLoad = currentPage === 'inventory' ? 'invitations' : currentPage
+    const timer = window.setTimeout(() => loadPageData(pageToLoad), 0)
     return () => window.clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, isAuthenticated])
-
-  const handleBorrow = async (itemId) => {
-    try {
-      await apiRequest('/loans', {
-        method: 'POST',
-        body: JSON.stringify({ itemId }),
-      })
-      await loadPageData('inventory')
-    } catch (error) {
-      setDataError(error.message || 'Could not request item')
-    }
-  }
 
   const handleLoanAction = async (loanId, action) => {
     try {
@@ -292,8 +273,11 @@ function App() {
     try {
       await apiRequest(`/invitations/${invitationId}/${action}`, { method: 'PATCH' })
       await loadPageData('invitations')
+      if (action === 'accept') await fetchGroups()
+      return true
     } catch (error) {
       setDataError(error.message || 'Could not update invitation')
+      return false
     }
   }
 
@@ -388,6 +372,7 @@ function App() {
   return (
     <div className="landing-page">
       {isAuthenticated ? (
+        <BorrowBuddyProvider user={user}>
         <div className="dashboard">
           <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
             <div className="sidebar-logo">
@@ -434,35 +419,12 @@ function App() {
                 </svg>
                 Inventory
               </a>
-              <a href="#" className={`sidebar-link ${currentPage === 'loans' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('loans') }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                  <circle cx="8.5" cy="7" r="4" />
-                  <line x1="20" y1="8" x2="20" y2="14" />
-                  <line x1="23" y1="11" x2="17" y2="11" />
-                </svg>
-                Loans
-              </a>
-              <a href="#" className={`sidebar-link ${currentPage === 'history' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('history') }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <polyline points="12 6 12 12 16 14" />
-                </svg>
-                History
-              </a>
               <a href="#" className={`sidebar-link ${currentPage === 'invitations' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('invitations') }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M4 4h16v16H4z" />
                   <path d="M4 7l8 5 8-5" />
                 </svg>
                 Invitations
-              </a>
-              <a href="#" className={`sidebar-link ${currentPage === 'notifications' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('notifications') }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-                </svg>
-                Notifications {unreadCount > 0 && `(${unreadCount})`}
               </a>
               <a href="#" className={`sidebar-link ${currentPage === 'profile' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('profile') }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -511,7 +473,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">{items.length}</div>
+                      <div className="stat-value"><GroupItemCount groupName="Friends Group" /></div>
                       <div className="stat-label">Total Items</div>
                     </div>
                   </div>
@@ -731,14 +693,14 @@ function App() {
                                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                     <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
                                   </svg>
-                                  <span>0 items</span>
+                                  <span><GroupItemCount groupName={group.name} /> items</span>
                                 </div>
                                 <div className="stat-with-icon">
                                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                     <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
                                     <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
                                   </svg>
-                                  <span>0 active loans</span>
+                                  <span><GroupItemCount groupName={group.name} type="loans" /> active loans</span>
                                 </div>
                               </div>
                             </div>
@@ -1095,39 +1057,7 @@ function App() {
               </>
             )}
 
-            {currentPage === 'inventory' && (
-              <>
-                <header className="dashboard-header">
-                  <div className="header-content">
-                    <h1 className="dashboard-greeting">Inventory</h1>
-                    <p className="dashboard-subtitle">Browse items shared with your groups and manage your own items.</p>
-                  </div>
-                  <button className="create-group-btn" disabled>+ Add Item</button>
-                </header>
-                {dataError && <div className="auth-message error">{dataError}</div>}
-                {dataLoading ? <div className="no-groups-message"><p>Loading inventory...</p></div> : (
-                  <div className="inventory-grid">
-                    {items.length === 0 ? <div className="no-groups-message"><p>No accessible items yet.</p></div> : items.map(item => (
-                      <article className="item-card" key={item._id}>
-                        <div className="item-card-image-box">
-                          {item.imageUrl ? <img className="item-card-image" src={imageUrl(item.imageUrl)} alt={item.name} /> : <div className="item-card-placeholder"><span>📦</span><span>No image</span></div>}
-                          <span className={`item-card-status-badge badge-${item.status}`}>{item.status}</span>
-                        </div>
-                        <div className="item-card-content">
-                          <h3 className="item-card-title">{item.name}</h3>
-                          <span className="item-card-category">{item.category}</span>
-                          <p className="item-card-desc">{item.description || 'No description provided.'}</p>
-                          <div className="item-card-meta"><span>Owner: {item.ownerId?.name || 'You'}</span></div>
-                          <button className="btn-borrow" disabled={item.status !== 'available' || item.ownerId?._id === user?._id} onClick={() => handleBorrow(item._id)}>
-                            {item.ownerId?._id === user?._id ? 'Your item' : item.status === 'available' ? 'Request to borrow' : item.status}
-                          </button>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
+            {currentPage === 'inventory' && <Inventory invitations={invitations} onInvitation={handleInvitation} />}
 
             {(currentPage === 'loans' || currentPage === 'history') && (
               <>
@@ -1169,7 +1099,8 @@ function App() {
               <>
                 <header className="dashboard-header"><div className="header-content"><h1 className="dashboard-greeting">Notifications</h1><p className="dashboard-subtitle">Stay updated on invitations, borrow requests, and returns.</p></div><button className="btn-mark-all" onClick={handleMarkAllNotificationsRead}>Mark all as read</button></header>
                 <div className="notification-list">
-                  {notifications.length === 0 ? <div className="no-notifications">No notifications.</div> : notifications.map(notification => <div key={notification._id} className={`notification-item ${notification.read ? '' : 'unread'}`} onClick={() => !notification.read && handleMarkNotificationRead(notification._id)}><div className="notification-icon">!</div><div className="notification-content"><div className="notification-item-title">{notification.title}</div><div className="notification-item-msg">{notification.message}</div><div className="notification-item-time">{new Date(notification.createdAt).toLocaleString()}</div></div></div>)}
+                  {notifications.map(notification => <div key={notification._id} className={`notification-item ${notification.read ? '' : 'unread'}`} onClick={() => !notification.read && handleMarkNotificationRead(notification._id)}><div className="notification-icon">!</div><div className="notification-content"><div className="notification-item-title">{notification.title}</div><div className="notification-item-msg">{notification.message}</div><div className="notification-item-time">{new Date(notification.createdAt).toLocaleString()}</div></div></div>)}
+                  <MockRequestNotifications showEmpty={notifications.length === 0} />
                 </div>
               </>
             )}
@@ -1256,10 +1187,9 @@ function App() {
               />
             )}
 
-            {currentPage === 'inventory' && <GroupRecordsPage type="inventory" />}
-            {currentPage === 'loans' && <GroupRecordsPage type="loans" />}
           </main>
         </div>
+        </BorrowBuddyProvider>
       ) : (
         <div className="landing-page">
       <nav className="navbar">

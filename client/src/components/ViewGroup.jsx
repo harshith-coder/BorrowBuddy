@@ -6,12 +6,14 @@ import BorrowItemForm from './BorrowItemForm'
 import BorrowedItems from './BorrowedItems'
 import ReturnItemForm from './ReturnItemForm'
 import { loadGroupData } from '../services/groupDataService'
+import { useBorrowBuddy } from '../context/useBorrowBuddy'
 import './ViewGroup.css'
 
 const getId = value => String(value?._id || value?.id || value || '')
 const ownerIdFor = (item, group) => getId(item.ownerId || group?.ownerId)
 
 function ViewGroup({ groupId, group, onBack }) {
+  const { groupData, currentMemberId, requestBorrow, returnMockLoan } = useBorrowBuddy()
   const [data, setData] = useState({ members: [], items: [], loans: [] })
   const [activeTab, setActiveTab] = useState('members')
   const [expandedMemberId, setExpandedMemberId] = useState('rahul')
@@ -36,6 +38,12 @@ function ViewGroup({ groupId, group, onBack }) {
     setLoading(true)
     setError('')
     try {
+      if (/^friends(?: group)?$/i.test((group?.name || '').trim())) {
+        setData(groupData)
+        setExpandedMemberId(current => groupData.members.some(member => getId(member) === current) ? current : currentMemberId)
+        setLoading(false)
+        return
+      }
       const result = await loadGroupData(group || { _id: groupId, name: 'friends' }, token)
       setData(result)
       setExpandedMemberId(current => result.members.some(member => getId(member) === current)
@@ -52,7 +60,7 @@ function ViewGroup({ groupId, group, onBack }) {
     // Fetching data from the service is the synchronization this effect owns.
     // eslint-disable-next-line react-hooks/set-state-in-effect
     refreshData()
-  }, [groupId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [groupId, groupData]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const itemsForMember = member => data.items.filter(item => ownerIdFor(item, group) === getId(member))
   const visibleMembers = useMemo(() => data.members.filter(member => {
@@ -66,6 +74,9 @@ function ViewGroup({ groupId, group, onBack }) {
   const modalMember = data.members.find(member => getId(member) === modalMemberId)
   const modalItems = modalMember ? itemsForMember(modalMember) : []
   const selectedItem = modalItems.find(item => getId(item) === selectedItemId && item.status === 'available')
+  const borrowerOptions = data.source === 'mock' && pendingBorrow
+    ? data.members.filter(member => getId(member) !== getId(pendingBorrow.owner))
+    : []
 
   const openBorrowModal = member => {
     setModalMemberId(getId(member))
@@ -86,17 +97,33 @@ function ViewGroup({ groupId, group, onBack }) {
     setBusy(true)
     setFormError('')
     try {
-      let loan
       if (data.source === 'mock') {
-        loan = {
-          _id: `friends-loan-${Date.now()}`,
-          itemId: pendingBorrow.item._id,
-          borrowerId,
+        const currentItem = groupData.items.find(item => getId(item) === getId(pendingBorrow.item))
+        const borrower = data.members.find(member => getId(member) === borrowDetails.borrowerId)
+        if (!currentItem || currentItem.status !== 'available') throw new Error('This item is no longer available.')
+        if (!borrower || getId(borrower) === getId(pendingBorrow.owner)) throw new Error('Choose a different member to request this item.')
+        requestBorrow({
+          _id: `friends-request-${Date.now()}`,
+          itemId: getId(currentItem),
+          itemName: currentItem.name,
+          ownerId: getId(pendingBorrow.owner),
+          borrowerId: getId(borrower),
+          borrowerName: borrower.name,
           checkoutDate: borrowDetails.checkoutDate,
-          dueDate: borrowDetails.returnDate,
-          status: 'active',
-        }
-      } else {
+          createdAt: new Date().toISOString(),
+          returnDate: borrowDetails.returnDate,
+          durationDays: borrowDetails.durationDays,
+          purpose: borrowDetails.purpose,
+          status: 'pending',
+        })
+        setPendingBorrow(null)
+        setActiveTab('members')
+        setNotice(`${currentItem.name} request sent to ${pendingBorrow.owner.name} for approval.`)
+        window.setTimeout(() => setNotice(''), 4500)
+        return
+      }
+      let loan
+      {
         const response = await fetch(`http://localhost:3000/api/groups/${groupId}/loans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
@@ -166,6 +193,7 @@ function ViewGroup({ groupId, group, onBack }) {
       let updatedLoan
       if (data.source === 'mock') {
         updatedLoan = { status: 'returned', returnDate, returnNote: note }
+        returnMockLoan(getId(returningLoan.loan), returnDate, note)
       } else {
         const response = await fetch(`http://localhost:3000/api/loans/${getId(returningLoan.loan)}/return`, {
           method: 'PATCH',
@@ -213,6 +241,9 @@ function ViewGroup({ groupId, group, onBack }) {
     item={pendingBorrow.item}
     owner={pendingBorrow.owner}
     borrowerName={borrowerName}
+    borrowerOptions={borrowerOptions}
+    defaultBorrowerId={borrowerOptions[0] ? getId(borrowerOptions[0]) : borrowerId}
+    mockMode={data.source === 'mock'}
     onCancel={() => { setPendingBorrow(null); setFormError('') }}
     onSubmit={submitBorrow}
     busy={busy}

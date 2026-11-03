@@ -53,6 +53,8 @@ export function createMockGroupData(group = {}) {
     name,
     category,
     status,
+    description: '',
+    dateAdded: dateAtOffset(-30 + (index % 28)),
   }))
   const getItem = name => mockItems.find(item => item.name === name && item.status === 'borrowed')
   const loans = [
