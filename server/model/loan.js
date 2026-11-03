@@ -32,6 +32,10 @@ const loanSchema = new mongoose.Schema(
     dueDate: {
       type: Date,
     },
+    durationDays: {
+      type: Number,
+      min: [1, "Borrow duration must be at least one day"],
+    },
     returnDate: {
       type: Date,
     },

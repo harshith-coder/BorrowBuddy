@@ -46,4 +46,6 @@ const groupSchema = new mongoose.Schema(
   }
 );
 
+groupSchema.index({ memberIds: 1 });
+
 module.exports = mongoose.models.Group || mongoose.model("Group", groupSchema);

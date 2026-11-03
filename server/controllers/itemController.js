@@ -1,25 +1,7 @@
 const BorrowableItem = require("../model/borrowableItem.js");
 const Group = require("../model/group.js");
-
-const getAccessibleItemQuery = async (userId) => {
-  const userGroups = await Group.find({
-    $or: [{ memberIds: userId }, { ownerId: userId }],
-  }).select("_id memberIds");
-  const userGroupIds = userGroups.map((group) => group._id);
-  const peerUserIds = [
-    ...new Set(
-      userGroups.flatMap((group) => group.memberIds.map((id) => id.toString()))
-    ),
-  ];
-
-  return {
-    $or: [
-      { ownerId: userId },
-      { sharingType: "all", ownerId: { $in: peerUserIds } },
-      { sharingType: "selected", sharedWithGroups: { $in: userGroupIds } },
-    ],
-  };
-};
+const Loan = require("../model/loan.js");
+const { getGroupForMember, getVisibleItemQuery, isValidObjectId } = require("../utils/itemVisibility.js");
 
 // Create an item with optional image and group sharing preferences
 const createItem = async (req, res, next) => {
@@ -41,10 +23,7 @@ const createItem = async (req, res, next) => {
     }
 
     if (groupId) {
-      const group = await Group.findOne({
-        _id: groupId,
-        $or: [{ memberIds: req.user._id }, { ownerId: req.user._id }],
-      }).select("_id");
+      const group = await getGroupForMember(groupId, req.user._id);
       if (!group) {
         return res.status(403).json({
           success: false,
@@ -54,6 +33,9 @@ const createItem = async (req, res, next) => {
     }
 
     if (sharingType === "selected") {
+      if (!parsedSharedWith.every(isValidObjectId)) {
+        return res.status(400).json({ success: false, message: "Selected groups must have valid IDs" });
+      }
       const groups = await Group.find({
         _id: { $in: parsedSharedWith },
         $or: [{ memberIds: req.user._id }, { ownerId: req.user._id }],
@@ -64,6 +46,9 @@ const createItem = async (req, res, next) => {
           message: "You can only share an item with groups you belong to",
         });
       }
+    }
+    if (sharingType !== undefined && !["all", "selected"].includes(sharingType)) {
+      return res.status(400).json({ success: false, message: "Sharing type must be all or selected" });
     }
 
     let imageUrl = "";
@@ -96,7 +81,7 @@ const createItem = async (req, res, next) => {
 // 3. Items shared with 'selected' groups where the viewer is a member of that group.
 const getItems = async (req, res, next) => {
   try {
-    const query = await getAccessibleItemQuery(req.user._id);
+    const query = await getVisibleItemQuery(req.user._id);
 
     const items = await BorrowableItem.find(query)
       .populate("ownerId", "name email phone avatar")
@@ -111,7 +96,10 @@ const getItems = async (req, res, next) => {
 
 const getItemById = async (req, res, next) => {
   try {
-    const accessQuery = await getAccessibleItemQuery(req.user._id);
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(404).json({ success: false, message: "Item not found" });
+    }
+    const accessQuery = await getVisibleItemQuery(req.user._id);
     const item = await BorrowableItem.findOne({ _id: req.params.id, ...accessQuery })
       .populate("ownerId", "name email phone avatar")
       .populate("sharedWithGroups", "name");
@@ -128,6 +116,9 @@ const getItemById = async (req, res, next) => {
 
 const updateItem = async (req, res, next) => {
   try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(404).json({ success: false, message: "Item not found" });
+    }
     const item = await BorrowableItem.findById(req.params.id);
 
     if (!item) {
@@ -139,6 +130,9 @@ const updateItem = async (req, res, next) => {
     }
 
     const { name, category, description, sharingType, sharedWithGroups } = req.body;
+    if (sharingType !== undefined && !["all", "selected"].includes(sharingType)) {
+      return res.status(400).json({ success: false, message: "Sharing type must be all or selected" });
+    }
 
     if (name !== undefined) item.name = name.trim();
     if (category !== undefined) item.category = category.trim();
@@ -150,6 +144,9 @@ const updateItem = async (req, res, next) => {
         : sharedWithGroups;
       if (!Array.isArray(parsedGroups)) {
         return res.status(400).json({ success: false, message: "Selected groups must be an array" });
+      }
+      if (!parsedGroups.every(isValidObjectId)) {
+        return res.status(400).json({ success: false, message: "Selected groups must have valid IDs" });
       }
       if (item.sharingType === "selected") {
         const groups = await Group.find({
@@ -187,6 +184,9 @@ const updateItem = async (req, res, next) => {
 
 const deleteItem = async (req, res, next) => {
   try {
+    if (!isValidObjectId(req.params.id)) {
+      return res.status(404).json({ success: false, message: "Item not found" });
+    }
     const item = await BorrowableItem.findById(req.params.id);
 
     if (!item) {
@@ -197,7 +197,36 @@ const deleteItem = async (req, res, next) => {
       return res.status(403).json({ success: false, message: "Only owner can delete this item" });
     }
 
-    await item.deleteOne();
+    const unresolvedLoan = await Loan.exists({
+      itemId: item._id,
+      status: { $in: ["requested", "booked", "active"] },
+    });
+    if (unresolvedLoan) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete an item with a pending or active loan",
+      });
+    }
+
+    // Borrow requests atomically move available items out of this state.
+    const deletedItem = await BorrowableItem.findOneAndDelete({
+      _id: item._id,
+      ownerId: req.user._id,
+      status: { $in: ["available", "maintenance", "retired"] },
+    });
+    if (!deletedItem) {
+      const currentLoan = await Loan.exists({
+        itemId: item._id,
+        status: { $in: ["requested", "booked", "active"] },
+      });
+      return res.status(400).json({
+        success: false,
+        message: currentLoan
+          ? "Cannot delete an item with a pending or active loan"
+          : "Item is currently unavailable for deletion",
+      });
+    }
+
     res.status(200).json({ success: true, message: "Item deleted successfully" });
   } catch (error) {
     next(error);

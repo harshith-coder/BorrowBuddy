@@ -17,16 +17,20 @@ const itemIcon = item => {
 }
 
 function Inventory({ invitations = [], onInvitation }) {
-  const { groupData, requests, currentMemberId, addItem, updateItem, deleteItem, respondToRequest } = useBorrowBuddy()
+  const { groupData, requests, currentMemberId, addItem, updateItem, deleteItem, respondToRequest, loading, error } = useBorrowBuddy()
   const [modalOpen, setModalOpen] = useState(false)
   const [editingItem, setEditingItem] = useState(null)
   const [openPanel, setOpenPanel] = useState('')
   const [notice, setNotice] = useState('')
+  const [deletingItemId, setDeletingItemId] = useState('')
+  const [respondingRequestId, setRespondingRequestId] = useState('')
   const ownedItems = groupData.items.filter(item => String(item.ownerId?._id || item.ownerId) === currentMemberId)
   const availableItems = ownedItems.filter(item => item.status === 'available').length
-  const borrowedItems = ownedItems.filter(item => item.status === 'borrowed').length
-  const ownerRequests = requests.filter(request => request.ownerId === currentMemberId)
-  const pendingRequests = ownerRequests.filter(request => request.status === 'pending').length
+  const borrowedItems = ownedItems.filter(item => ['requested', 'booked', 'borrowed'].includes(item.status)).length
+  const ownerRequests = requests.filter(request =>
+    String(request.lenderId?._id || request.lenderId) === String(currentMemberId)
+  )
+  const pendingRequests = ownerRequests.filter(request => request.status === 'requested').length
   const pendingInvitations = invitations.filter(invitation => invitation.status === 'pending').length
 
   const showNotice = message => {
@@ -34,23 +38,40 @@ function Inventory({ invitations = [], onInvitation }) {
     window.setTimeout(() => setNotice(''), 4000)
   }
   const openAddModal = () => { setEditingItem(null); setModalOpen(true) }
-  const saveItem = values => {
-    if (editingItem) updateItem(editingItem._id, { ...values, status: values.status.toLowerCase() })
-    else addItem(values)
-    setModalOpen(false)
-    setEditingItem(null)
-    showNotice(editingItem ? 'Item updated.' : 'Item added to your inventory.')
-  }
-  const removeItem = item => {
-    if (groupData.loans.some(loan => String(loan.itemId?._id || loan.itemId) === item._id && ['active', 'overdue'].includes(loan.status))) {
-      showNotice('Return this item before deleting it.')
-      return
+  const saveItem = async values => {
+    try {
+      if (editingItem) await updateItem(editingItem._id, values)
+      else await addItem(values)
+      setModalOpen(false)
+      setEditingItem(null)
+      showNotice(editingItem ? 'Item updated.' : 'Item added to your inventory.')
+    } catch (saveError) {
+      showNotice(saveError.message || 'Could not save item.')
     }
-    deleteItem(item._id)
   }
-  const respondRequest = (requestId, action) => {
-    respondToRequest(requestId, action)
-    showNotice(action === 'approved' ? 'Borrow request approved.' : 'Borrow request rejected. The item remains available.')
+  const removeItem = async item => {
+    if (deletingItemId) return
+    setDeletingItemId(item._id)
+    try {
+      await deleteItem(item._id)
+      showNotice('Item deleted.')
+    } catch (deleteError) {
+      showNotice(deleteError.message || 'Could not delete item.')
+    } finally {
+      setDeletingItemId('')
+    }
+  }
+  const respondRequest = async (requestId, action) => {
+    if (respondingRequestId) return
+    setRespondingRequestId(requestId)
+    try {
+      await respondToRequest(requestId, action)
+      showNotice(action === 'approved' ? 'Borrow request approved.' : 'Borrow request rejected. The item remains available.')
+    } catch (responseError) {
+      showNotice(responseError.message || 'Could not update the borrow request.')
+    } finally {
+      setRespondingRequestId('')
+    }
   }
   const respondInvitation = async (invitationId, action) => {
     const success = onInvitation ? await onInvitation(invitationId, action === 'accepted' ? 'accept' : 'reject') : false
@@ -69,27 +90,29 @@ function Inventory({ invitations = [], onInvitation }) {
     </header>
 
     {notice && <div className="inventory-notice" role="status">{notice}</div>}
+    {error && <div className="inventory-notice" role="alert">{error}</div>}
+    {loading && <div className="inventory-notice" role="status">Loading your inventory…</div>}
 
-    {ownedItems.length === 0 ? <InventoryEmptyState onAddItem={openAddModal} /> : <>
+    {!loading && ownedItems.length === 0 ? <InventoryEmptyState onAddItem={openAddModal} /> : !loading && <>
       <section className="inventory-summary">
         <article><span><GroupIcon name="box" /></span><div><strong>{ownedItems.length}</strong><small>Total Items</small></div></article>
         <article><span className="is-available"><GroupIcon name="check" /></span><div><strong>{availableItems}</strong><small>Available Items</small></div></article>
         <article><span className="is-borrowed"><GroupIcon name="borrow" /></span><div><strong>{borrowedItems}</strong><small>Borrowed Items</small></div></article>
       </section>
-      <div className="inventory-list-heading"><div><h2>Your Items</h2><p>Items shared with Friends Group</p></div><button className="inventory-primary" type="button" onClick={openAddModal}><b>＋</b>Add Item</button></div>
+      <div className="inventory-list-heading"><div><h2>Your Items</h2><p>Items shared with your groups</p></div><button className="inventory-primary" type="button" onClick={openAddModal}><b>＋</b>Add Item</button></div>
       <section className="inventory-item-grid">
         {ownedItems.map(item => <article className="inventory-item-card" key={item._id}>
           <div className="inventory-item-card-heading"><span className="inventory-item-icon"><GroupIcon name={itemIcon(item)} /></span><span className={`inventory-status ${item.status}`}>{item.status}</span></div>
           <h3>{item.name}</h3><span className="inventory-item-category">{item.category}</span>
           <p>{item.description || 'No description provided.'}</p>
-          <footer><span>Added {displayDate(item.dateAdded || item.createdAt)}</span><div><button type="button" aria-label={`Edit ${item.name}`} onClick={() => { setEditingItem(item); setModalOpen(true) }}><GroupIcon name="edit" /></button><button type="button" aria-label={`Delete ${item.name}`} onClick={() => removeItem(item)}><GroupIcon name="trash" /></button></div></footer>
+          <footer><span>Added {displayDate(item.dateAdded || item.createdAt)}</span><div><button type="button" aria-label={`Edit ${item.name}`} onClick={() => { setEditingItem(item); setModalOpen(true) }} disabled={Boolean(deletingItemId)}><GroupIcon name="edit" /></button><button type="button" aria-label={`Delete ${item.name}`} onClick={() => removeItem(item)} disabled={deletingItemId === item._id}><GroupIcon name="trash" /></button></div></footer>
         </article>)}
       </section>
     </>}
 
     {modalOpen && <AddItemModal item={editingItem} onClose={() => { setModalOpen(false); setEditingItem(null) }} onSave={saveItem} />}
     {openPanel === 'invitations' && <InvitationsPanel invitations={invitations} onRespond={respondInvitation} onClose={() => setOpenPanel('')} />}
-    {openPanel === 'notifications' && <NotificationsPanel requests={ownerRequests} onRespond={respondRequest} onClose={() => setOpenPanel('')} />}
+    {openPanel === 'notifications' && <NotificationsPanel requests={ownerRequests} onRespond={respondRequest} respondingRequestId={respondingRequestId} onClose={() => setOpenPanel('')} />}
   </section>
 }
 

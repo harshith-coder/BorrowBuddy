@@ -2,12 +2,12 @@ const mongoose = require("mongoose");
 const { Constants } = require("../config/constants.js");
 
 const dbConnect = async()=>{
-    try {
-        await mongoose.connect(Constants.DBURL);
-        console.log("Database is connected")
-    }catch(err){
-        console.log("DataBase is failed to connect :",err.message)
+    if (!Constants.DBURL) {
+        throw new Error("DBURL is not configured");
     }
+
+    await mongoose.connect(Constants.DBURL);
+    console.log("Database is connected");
 }
 
 module.exports = {dbConnect};

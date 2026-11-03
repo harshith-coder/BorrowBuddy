@@ -18,9 +18,13 @@ const notificationSchema = new mongoose.Schema(
         "group_invitation",
         "invitation_accepted",
         "invitation_rejected",
+        "membership_request",
+        "membership_request_approved",
+        "membership_request_rejected",
         "borrow_request",
         "borrow_approved",
         "borrow_rejected",
+        "loan_activated",
         "item_returned",
         "general"
       ],
@@ -44,6 +48,7 @@ const notificationSchema = new mongoose.Schema(
       itemId: { type: mongoose.Schema.Types.ObjectId, ref: "BorrowableItem" },
       loanId: { type: mongoose.Schema.Types.ObjectId, ref: "Loan" },
       invitationId: { type: mongoose.Schema.Types.ObjectId, ref: "Invitation" },
+      requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
     },
   },
   {
@@ -54,4 +59,3 @@ const notificationSchema = new mongoose.Schema(
 module.exports =
   mongoose.models.Notification ||
   mongoose.model("Notification", notificationSchema);
-

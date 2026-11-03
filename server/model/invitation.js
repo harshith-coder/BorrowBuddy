@@ -19,9 +19,20 @@ const invitationSchema = new mongoose.Schema(
       required: [true, "Invitation must have an invitee"],
       index: true,
     },
+    requestedBy: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "User",
+      index: true,
+    },
+    requestType: {
+      type: String,
+      enum: ["owner_invitation", "member_request"],
+      default: "owner_invitation",
+      index: true,
+    },
     status: {
       type: String,
-      enum: ["pending", "accepted", "rejected"],
+      enum: ["pending", "accepted", "rejected", "cancelled"],
       default: "pending",
       index: true,
     },

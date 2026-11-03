@@ -8,13 +8,14 @@ const {
   deleteItem,
 } = require("../controllers/itemController.js");
 const { protect } = require("../middleware/authMiddleware.js");
+const { Constants } = require("../config/constants.js");
 
 const router = express.Router();
 
 // Multer storage for item images
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
-    cb(null, "uploads/");
+    cb(null, Constants.UPLOAD_DIR);
   },
   filename: function (req, file, cb) {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);

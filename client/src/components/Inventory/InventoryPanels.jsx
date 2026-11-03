@@ -22,13 +22,13 @@ export function InvitationsPanel({ invitations, onRespond, onClose }) {
   </Drawer>
 }
 
-export function NotificationsPanel({ requests, onRespond, onClose }) {
+export function NotificationsPanel({ requests, onRespond, respondingRequestId, onClose }) {
   return <Drawer title="Notifications" onClose={onClose}>
     {requests.length ? requests.map(request => <article className="inventory-panel-card" key={request._id}>
-      <div className="inventory-request-title"><span><GroupIcon name="box" /></span><strong>{request.borrowerName} requested to borrow your {request.itemName}.</strong></div>
-      <p>Requested {displayDate(request.createdAt)} · Return by {displayDate(request.returnDate || request.dueDate)}</p>
-      {request.purpose && <p className="inventory-request-purpose">Purpose: {request.purpose}</p>}
-      {request.status === 'pending' ? <footer><button type="button" className="inventory-secondary reject" onClick={() => onRespond(request._id, 'rejected')}>Reject</button><button type="button" className="inventory-primary" onClick={() => onRespond(request._id, 'approved')}>Accept</button></footer> : <span className={`inventory-result ${request.status}`}>{request.status === 'approved' ? 'Approved' : 'Rejected'}</span>}
+      <div className="inventory-request-title"><span><GroupIcon name="box" /></span><strong>{request.borrowerId?.name || 'A member'} requested to borrow your {request.itemId?.name || 'item'}.</strong></div>
+      <p>Requested {displayDate(request.createdAt)} · Return by {displayDate(request.dueDate)}</p>
+      {request.note && <p className="inventory-request-purpose">Purpose: {request.note}</p>}
+      {request.status === 'requested' ? <footer><button type="button" className="inventory-secondary reject" disabled={respondingRequestId === request._id} onClick={() => onRespond(request._id, 'rejected')}>Reject</button><button type="button" className="inventory-primary" disabled={respondingRequestId === request._id} onClick={() => onRespond(request._id, 'approved')}>Accept</button></footer> : <span className={`inventory-result ${request.status}`}>{request.status === 'booked' ? 'Approved' : request.status}</span>}
     </article>) : <div className="inventory-panel-empty"><GroupIcon name="bell" /><strong>No notifications yet</strong><span>Borrow requests for your items will appear here.</span></div>}
   </Drawer>
 }

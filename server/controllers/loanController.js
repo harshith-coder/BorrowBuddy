@@ -1,126 +1,149 @@
+const mongoose = require("mongoose");
 const Loan = require("../model/loan.js");
 const BorrowableItem = require("../model/borrowableItem.js");
 const Notification = require("../model/notification.js");
-const Group = require("../model/group.js");
+const { getVisibleItemQuery } = require("../utils/itemVisibility.js");
+
+const activeStatuses = ["requested", "booked", "active"];
+const isValidId = value => mongoose.Types.ObjectId.isValid(value);
+
+const notify = (recipientId, senderId, type, title, message, data) =>
+  Notification.create({ recipientId, senderId, type, title, message, data });
+
+const syncItemStatus = async itemId => {
+  const unresolvedLoan = await Loan.findOne({ itemId, status: { $in: activeStatuses } })
+    .sort({ createdAt: -1 })
+    .select("status");
+  const status = unresolvedLoan
+    ? unresolvedLoan.status === "active" ? "borrowed" : unresolvedLoan.status
+    : "available";
+  await BorrowableItem.findByIdAndUpdate(itemId, { $set: { status } });
+};
 
 const requestLoan = async (req, res, next) => {
   try {
-    const { itemId, dueDate, note, groupId } = req.body;
+    const { itemId, checkoutDate, dueDate, durationDays, note, groupId } = req.body || {};
     const borrowerId = req.user._id;
-
-    if (!itemId) {
-      return res.status(400).json({ success: false, message: "Item ID is required" });
+    if (!isValidId(itemId) || (groupId && !isValidId(groupId))) {
+      return res.status(400).json({ success: false, message: "Valid item and group IDs are required" });
+    }
+    const visibilityQuery = await getVisibleItemQuery(borrowerId, groupId);
+    const item = visibilityQuery
+      ? await BorrowableItem.findOne({ _id: itemId, ...visibilityQuery })
+      : null;
+    if (!item) return res.status(404).json({ success: false, message: "Item not found" });
+    if (item.ownerId.toString() === borrowerId.toString()) {
+      return res.status(400).json({ success: false, message: "You cannot borrow your own item" });
     }
 
-    const candidate = await BorrowableItem.findById(itemId);
-    if (!candidate) {
-      return res.status(404).json({ success: false, message: "Item not found" });
+    const checkout = checkoutDate ? new Date(checkoutDate) : new Date();
+    const due = dueDate ? new Date(dueDate) : new Date(checkout.getTime() + 7 * 86400000);
+    const duration = durationDays === undefined || durationDays === ""
+      ? Math.ceil((due.getTime() - checkout.getTime()) / 86400000)
+      : Number(durationDays);
+    if (
+      Number.isNaN(checkout.getTime()) ||
+      Number.isNaN(due.getTime()) ||
+      due < checkout ||
+      !Number.isInteger(duration) ||
+      duration < 1 ||
+      duration > 365
+    ) {
+      return res.status(400).json({ success: false, message: "Borrow duration must be a whole number from 1 to 365 days" });
     }
 
-    if (candidate.ownerId.toString() === borrowerId.toString()) {
-      return res.status(400).json({
-        success: false,
-        message: "You cannot borrow your own item",
-      });
-    }
-
-    const borrowerGroups = await Group.find({
-      $or: [{ memberIds: borrowerId }, { ownerId: borrowerId }],
-    }).select("_id");
-    const borrowerGroupIds = borrowerGroups.map((group) => group._id.toString());
-    const canAccess = candidate.sharingType === "selected"
-      ? candidate.sharedWithGroups.some((sharedGroupId) =>
-          borrowerGroupIds.includes(sharedGroupId.toString()))
-      : await Group.exists({
-          _id: { $in: borrowerGroupIds },
-          $or: [
-            { memberIds: candidate.ownerId },
-            { ownerId: candidate.ownerId },
-          ],
-        });
-
-    if (!canAccess) {
-      return res.status(403).json({
-        success: false,
-        message: "You do not have access to borrow this item",
-      });
-    }
-
-    const item = await BorrowableItem.findOneAndUpdate(
+    const reservedItem = await BorrowableItem.findOneAndUpdate(
       { _id: itemId, status: "available" },
       { $set: { status: "requested" } },
-      { new: true }
+      { returnDocument: "after" }
     );
-
-    if (!item) {
-      const existing = await BorrowableItem.findById(itemId);
-      if (!existing) {
-        return res.status(404).json({ success: false, message: "Item not found" });
-      }
-      return res.status(400).json({
-        success: false,
-        message: `This item is not available for borrowing (currently ${existing.status})`,
-      });
+    if (!reservedItem) {
+      return res.status(400).json({ success: false, message: "This item is not available for borrowing" });
     }
 
-    const loan = await Loan.create({
-      itemId: item._id,
-      groupId: groupId || item.groupId,
+    let loan;
+    try {
+      loan = await Loan.create({
+        itemId,
+        groupId: groupId || undefined,
+        borrowerId,
+        lenderId: item.ownerId,
+        checkoutDate: checkout,
+        dueDate: due,
+        durationDays: duration,
+        note: typeof note === "string" ? note.trim() : "",
+        status: "requested",
+      });
+    } catch (error) {
+      await BorrowableItem.findOneAndUpdate({ _id: itemId, status: "requested" }, { $set: { status: "available" } });
+      throw error;
+    }
+
+    await notify(
+      item.ownerId,
       borrowerId,
-      lenderId: item.ownerId,
-      dueDate: dueDate ? new Date(dueDate) : new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
-      note: note ? note.trim() : "",
-      status: "requested",
-    });
-
-    await Notification.create({
-      recipientId: item.ownerId,
-      senderId: borrowerId,
-      type: "borrow_request",
-      title: "New Borrow Request",
-      message: `${req.user.name} requested to borrow "${item.name}"`,
-      data: {
-        itemId: item._id,
-        loanId: loan._id,
-        groupId: loan.groupId,
-      },
-    });
-
+      "borrow_request",
+      "New Borrow Request",
+      `${req.user.name} requested to borrow "${item.name}"`,
+      { itemId: item._id, loanId: loan._id, groupId: loan.groupId }
+    );
     res.status(201).json({ success: true, data: loan });
   } catch (error) {
     next(error);
   }
 };
 
+const requestGroupLoan = (req, res, next) => {
+  req.body = { ...(req.body || {}), groupId: req.params.id };
+  return requestLoan(req, res, next);
+};
+
 const approveLoan = async (req, res, next) => {
   try {
+    if (!isValidId(req.params.id)) return res.status(400).json({ success: false, message: "Invalid loan ID" });
     const loan = await Loan.findById(req.params.id).populate("itemId");
-    if (!loan) {
-      return res.status(404).json({ success: false, message: "Loan request not found" });
-    }
-
+    if (!loan) return res.status(404).json({ success: false, message: "Loan request not found" });
     if (loan.lenderId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Only the item owner can approve this request" });
     }
-
     if (loan.status !== "requested") {
       return res.status(400).json({ success: false, message: `Loan is already ${loan.status}` });
     }
-
-    loan.status = "booked";
-    await loan.save();
-    await BorrowableItem.findByIdAndUpdate(loan.itemId._id, { status: "booked" });
-
-    await Notification.create({
-      recipientId: loan.borrowerId,
-      senderId: req.user._id,
-      type: "borrow_approved",
-      title: "Borrow Request Approved",
-      message: `Your request for "${loan.itemId.name}" was approved!`,
-      data: { loanId: loan._id, itemId: loan.itemId._id },
+    const conflictingLoan = await Loan.exists({
+      itemId: loan.itemId._id,
+      _id: { $ne: loan._id },
+      status: { $in: ["booked", "active"] },
     });
+    if (conflictingLoan) {
+      return res.status(400).json({ success: false, message: "Another borrowing request already owns this item" });
+    }
 
-    res.status(200).json({ success: true, data: loan });
+    const item = await BorrowableItem.findOneAndUpdate(
+      { _id: loan.itemId._id, status: "requested" },
+      { $set: { status: "borrowed" } },
+      { returnDocument: "after" }
+    );
+    if (!item) return res.status(400).json({ success: false, message: "Item is no longer available for approval" });
+
+    const activeLoan = await Loan.findOneAndUpdate(
+      { _id: loan._id, status: "requested" },
+      { $set: { status: "active" } },
+      { returnDocument: "after", runValidators: true }
+    );
+    if (!activeLoan) {
+      await syncItemStatus(item._id);
+      return res.status(400).json({ success: false, message: "Loan is no longer pending" });
+    }
+
+    await notify(
+      loan.borrowerId,
+      req.user._id,
+      "borrow_approved",
+      "Borrow Request Approved",
+      `Your request for "${item.name}" was approved`,
+      { loanId: loan._id, itemId: item._id, groupId: loan.groupId }
+    );
+    res.status(200).json({ success: true, data: activeLoan });
   } catch (error) {
     next(error);
   }
@@ -128,33 +151,67 @@ const approveLoan = async (req, res, next) => {
 
 const rejectLoan = async (req, res, next) => {
   try {
+    if (!isValidId(req.params.id)) return res.status(400).json({ success: false, message: "Invalid loan ID" });
     const loan = await Loan.findById(req.params.id).populate("itemId");
-    if (!loan) {
-      return res.status(404).json({ success: false, message: "Loan request not found" });
-    }
-
+    if (!loan) return res.status(404).json({ success: false, message: "Loan request not found" });
     if (loan.lenderId.toString() !== req.user._id.toString()) {
       return res.status(403).json({ success: false, message: "Only the item owner can reject this request" });
     }
+    const rejectedLoan = await Loan.findOneAndUpdate(
+      { _id: loan._id, status: "requested" },
+      { $set: { status: "rejected" } },
+      { returnDocument: "after", runValidators: true }
+    );
+    if (!rejectedLoan) return res.status(400).json({ success: false, message: `Loan is already ${loan.status}` });
+    await syncItemStatus(loan.itemId._id);
+    await notify(
+      loan.borrowerId,
+      req.user._id,
+      "borrow_rejected",
+      "Borrow Request Declined",
+      `Your request for "${loan.itemId.name}" was declined`,
+      { loanId: loan._id, itemId: loan.itemId._id, groupId: loan.groupId }
+    );
+    res.status(200).json({ success: true, data: rejectedLoan });
+  } catch (error) {
+    next(error);
+  }
+};
 
-    if (loan.status !== "requested") {
-      return res.status(400).json({ success: false, message: `Loan is already ${loan.status}` });
+const activateLoan = async (req, res, next) => {
+  try {
+    if (!isValidId(req.params.id)) return res.status(400).json({ success: false, message: "Invalid loan ID" });
+    const loan = await Loan.findById(req.params.id).populate("itemId");
+    if (!loan) return res.status(404).json({ success: false, message: "Loan not found" });
+    const userId = req.user._id.toString();
+    if (![loan.borrowerId, loan.lenderId].some(id => id.toString() === userId)) {
+      return res.status(403).json({ success: false, message: "You are not authorized to activate this loan" });
     }
-
-    loan.status = "rejected";
-    await loan.save();
-    await BorrowableItem.findByIdAndUpdate(loan.itemId._id, { status: "available" });
-
-    await Notification.create({
-      recipientId: loan.borrowerId,
-      senderId: req.user._id,
-      type: "borrow_rejected",
-      title: "Borrow Request Declined",
-      message: `Your request for "${loan.itemId.name}" was declined.`,
-      data: { loanId: loan._id, itemId: loan.itemId._id },
-    });
-
-    res.status(200).json({ success: true, data: loan });
+    const activeLoan = await Loan.findOneAndUpdate(
+      { _id: loan._id, status: "booked" },
+      { $set: { status: "active" } },
+      { returnDocument: "after", runValidators: true }
+    );
+    if (!activeLoan) return res.status(400).json({ success: false, message: `Loan is already ${loan.status}` });
+    const item = await BorrowableItem.findOneAndUpdate(
+      { _id: loan.itemId._id, status: "booked" },
+      { $set: { status: "borrowed" } },
+      { returnDocument: "after" }
+    );
+    if (!item) {
+      await Loan.findOneAndUpdate({ _id: loan._id, status: "active" }, { $set: { status: "booked" } });
+      await syncItemStatus(loan.itemId._id);
+      return res.status(400).json({ success: false, message: "Item is not in booked state" });
+    }
+    await notify(
+      loan.borrowerId.toString() === userId ? loan.lenderId : loan.borrowerId,
+      req.user._id,
+      "loan_activated",
+      "Loan Activated",
+      `"${item.name}" is now active`,
+      { loanId: loan._id, itemId: item._id, groupId: loan.groupId }
+    );
+    res.status(200).json({ success: true, data: activeLoan });
   } catch (error) {
     next(error);
   }
@@ -162,16 +219,12 @@ const rejectLoan = async (req, res, next) => {
 
 const getUserLoans = async (req, res, next) => {
   try {
-    const userId = req.user._id;
-    const loans = await Loan.find({
-      $or: [{ borrowerId: userId }, { lenderId: userId }],
-    })
+    const loans = await Loan.find({ $or: [{ borrowerId: req.user._id }, { lenderId: req.user._id }] })
       .populate("itemId")
       .populate("borrowerId", "name email phone avatar")
       .populate("lenderId", "name email phone avatar")
       .populate("groupId", "name")
       .sort({ createdAt: -1 });
-
     res.status(200).json({ success: true, data: loans });
   } catch (error) {
     next(error);
@@ -180,64 +233,46 @@ const getUserLoans = async (req, res, next) => {
 
 const returnLoan = async (req, res, next) => {
   try {
+    if (!isValidId(req.params.id)) return res.status(400).json({ success: false, message: "Invalid loan ID" });
     const loan = await Loan.findById(req.params.id).populate("itemId");
-
-    if (!loan) {
-      return res.status(404).json({ success: false, message: "Loan not found" });
-    }
-
-    const group = await Group.findById(loan.groupId).select("ownerId memberIds");
-    if (!group) {
-      return res.status(404).json({ success: false, message: "Group not found" });
-    }
-
+    if (!loan) return res.status(404).json({ success: false, message: "Loan not found" });
     const userId = req.user._id.toString();
-    const isGroupMember = group.ownerId.toString() === userId ||
-      group.memberIds.some((memberId) => memberId.toString() === userId);
-    if (!isGroupMember) {
-      return res.status(403).json({ success: false, message: "You are not a member of this group" });
+    if (![loan.borrowerId, loan.lenderId].some(id => id.toString() === userId)) {
+      return res.status(403).json({ success: false, message: "You are not authorized to return this loan" });
     }
-
-    if (loan.status === "returned") {
-      return res.status(400).json({ success: false, message: "Loan has already been returned" });
+    if (!["active", "booked"].includes(loan.status)) {
+      return res.status(400).json({ success: false, message: `Loan must be active to return (currently ${loan.status})` });
     }
-
     const requestedReturnDate = req.body?.returnDate ? new Date(req.body.returnDate) : new Date();
-    if (Number.isNaN(requestedReturnDate.getTime())) {
-      return res.status(400).json({ success: false, message: "Return date must be valid" });
-    }
-
     const returnNote = typeof req.body?.note === "string" ? req.body.note.trim() : "";
-    if (returnNote.length > 500) {
-      return res.status(400).json({ success: false, message: "Return note cannot be more than 500 characters" });
+    if (Number.isNaN(requestedReturnDate.getTime()) || returnNote.length > 500) {
+      return res.status(400).json({ success: false, message: "Return details are invalid" });
     }
-
-    // Conditional update prevents two return requests from creating duplicate transitions.
     const returnedLoan = await Loan.findOneAndUpdate(
-      { _id: loan._id, status: { $in: ["active", "overdue"] } },
-      { $set: { returnDate: requestedReturnDate, returnNote, status: "returned" } },
-      { new: true, runValidators: true }
+      { _id: loan._id, status: { $in: ["active", "booked"] } },
+      { $set: { status: "returned", returnDate: requestedReturnDate, returnNote } },
+      { returnDocument: "after", runValidators: true }
     );
-    if (!returnedLoan) {
-      return res.status(400).json({ success: false, message: "Loan has already been returned" });
-    }
-
-    try {
-      const item = await BorrowableItem.findOneAndUpdate(
-        { _id: loan.itemId, groupId: loan.groupId },
-        { $set: { status: "available" } },
-        { new: true }
-      );
-      if (!item) throw new Error("The loan item could not be found in its group");
-    } catch (itemError) {
+    if (!returnedLoan) return res.status(400).json({ success: false, message: "Loan is no longer active" });
+    const item = await BorrowableItem.findOne({ _id: loan.itemId._id });
+    if (!item) {
       await Loan.findOneAndUpdate(
         { _id: loan._id, status: "returned" },
-        { $set: { status: loan.status }, $unset: { returnDate: 1, returnNote: 1 } }
+        { $set: { status: "active" }, $unset: { returnDate: 1, returnNote: 1 } }
       );
-      throw itemError;
+      return res.status(404).json({ success: false, message: "The loan item could not be found" });
     }
-
-    return res.status(200).json({ success: true, data: returnedLoan });
+    await syncItemStatus(item._id);
+    const recipientId = loan.borrowerId.toString() === userId ? loan.lenderId : loan.borrowerId;
+    await notify(
+      recipientId,
+      req.user._id,
+      "item_returned",
+      "Item Returned",
+      `"${item.name}" was returned`,
+      { loanId: loan._id, itemId: item._id, groupId: loan.groupId }
+    );
+    res.status(200).json({ success: true, data: returnedLoan });
   } catch (error) {
     next(error);
   }
@@ -245,8 +280,10 @@ const returnLoan = async (req, res, next) => {
 
 module.exports = {
   requestLoan,
+  requestGroupLoan,
   approveLoan,
   rejectLoan,
+  activateLoan,
   returnLoan,
   getUserLoans,
 };

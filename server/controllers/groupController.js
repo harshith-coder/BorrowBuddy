@@ -1,14 +1,31 @@
 const Group = require("../model/group.js");
 const BorrowableItem = require("../model/borrowableItem.js");
 const Loan = require("../model/loan.js");
+const Invitation = require("../model/invitation.js");
+const mongoose = require("mongoose");
+const { getGroupForMember, getVisibleItemQuery } = require("../utils/itemVisibility.js");
 
-const isGroupMember = (group, userId) =>
-  group.ownerId.toString() === userId.toString() ||
-  group.memberIds.some((id) => id.toString() === userId.toString());
+const isGroupMember = (group, userId) => {
+  const normalizedUserId = userId?.toString();
+  if (!normalizedUserId || !group) return false;
+  const normalizeId = value => (value?._id || value)?.toString();
+  return normalizeId(group.ownerId) === normalizedUserId ||
+    (Array.isArray(group.memberIds) &&
+      group.memberIds.some((id) => normalizeId(id) === normalizedUserId));
+};
 
 const isManager = (group, userId) =>
   group.ownerId.toString() === userId.toString() ||
   group.managerIds.some((id) => id.toString() === userId.toString());
+
+const unresolvedLoanStatuses = ["requested", "booked", "active"];
+
+const hasUnresolvedGroupLoan = (groupId, userId) =>
+  Loan.exists({
+    groupId,
+    $or: [{ borrowerId: userId }, { lenderId: userId }],
+    status: { $in: unresolvedLoanStatuses },
+  });
 
 const createGroup = async (req, res, next) => {
   try {
@@ -53,12 +70,24 @@ const createGroup = async (req, res, next) => {
 
 const getGroups = async (req, res, next) => {
   try {
+    const acceptedInvitations = await Invitation.find({
+      inviteeId: req.user._id,
+      status: "accepted",
+    }).select("groupId");
+    const acceptedGroupIds = acceptedInvitations.map(invitation => invitation.groupId);
+    if (acceptedGroupIds.length) {
+      await Group.updateMany(
+        { _id: { $in: acceptedGroupIds } },
+        { $addToSet: { memberIds: req.user._id } }
+      );
+    }
+
     const groups = await Group.find({
       $or: [
         { ownerId: req.user._id },
         { memberIds: req.user._id },
       ],
-    });
+    }).populate("ownerId", "name email avatar");
 
     res.status(200).json({
       success: true,
@@ -69,8 +98,24 @@ const getGroups = async (req, res, next) => {
   }
 };
 
+const getDiscoverableGroups = async (req, res, next) => {
+  try {
+    const groups = await Group.find({
+      ownerId: { $ne: req.user._id },
+      memberIds: { $ne: req.user._id },
+    })
+      .populate("ownerId", "name email avatar")
+      .sort({ createdAt: -1 });
+
+    res.status(200).json({ success: true, data: groups });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const getGroupMembers = async (req, res, next) => {
   try {
+    const membership = await getGroupForMember(req.params.id, req.user._id);
     const group = await Group.findById(req.params.id)
       .populate("memberIds", "name email phone avatar");
 
@@ -81,7 +126,7 @@ const getGroupMembers = async (req, res, next) => {
       });
     }
 
-    if (!isGroupMember(group, req.user._id)) {
+    if (!membership || !isGroupMember(group, req.user._id)) {
       return res.status(403).json({
         success: false,
         message: "You are not a member of this group",
@@ -97,9 +142,149 @@ const getGroupMembers = async (req, res, next) => {
   }
 };
 
+const removeGroupMember = async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id) ||
+      !mongoose.Types.ObjectId.isValid(req.params.memberId)) {
+      return res.status(400).json({ success: false, message: "Invalid group or member ID" });
+    }
+
+    const group = await Group.findById(req.params.id).select("ownerId memberIds");
+    if (!group) {
+      return res.status(404).json({ success: false, message: "Group not found" });
+    }
+    if (group.ownerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Only the group owner can remove members" });
+    }
+    if (group.ownerId.toString() === req.params.memberId) {
+      return res.status(400).json({ success: false, message: "The group owner cannot be removed" });
+    }
+    if (!group.memberIds.some(id => id.toString() === req.params.memberId)) {
+      return res.status(400).json({ success: false, message: "User is not a member of this group" });
+    }
+    if (await hasUnresolvedGroupLoan(group._id, req.params.memberId)) {
+      return res.status(400).json({
+        success: false,
+        message: "This member cannot be removed while they have requested, booked, or active loans in this group",
+      });
+    }
+
+    const updatedGroup = await Group.findOneAndUpdate(
+      {
+        _id: group._id,
+        ownerId: req.user._id,
+        memberIds: req.params.memberId,
+      },
+      { $pull: { memberIds: req.params.memberId, managerIds: req.params.memberId } },
+      { returnDocument: "after" }
+    );
+    if (!updatedGroup) {
+      return res.status(400).json({ success: false, message: "User is no longer a member of this group" });
+    }
+
+    res.status(200).json({ success: true, message: "Member removed successfully", data: updatedGroup });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const leaveGroup = async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid group ID" });
+    }
+
+    const group = await Group.findById(req.params.id).select("ownerId memberIds");
+    if (!group) {
+      return res.status(404).json({ success: false, message: "Group not found" });
+    }
+    const userId = req.user._id.toString();
+    if (group.ownerId.toString() === userId) {
+      return res.status(400).json({ success: false, message: "The group owner cannot leave this group" });
+    }
+    if (!group.memberIds.some(id => id.toString() === userId)) {
+      return res.status(403).json({ success: false, message: "You are not a member of this group" });
+    }
+    if (await hasUnresolvedGroupLoan(group._id, req.user._id)) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot leave while you have requested, booked, or active loans in this group",
+      });
+    }
+
+    const updatedGroup = await Group.findOneAndUpdate(
+      { _id: group._id, memberIds: req.user._id, ownerId: { $ne: req.user._id } },
+      { $pull: { memberIds: req.user._id, managerIds: req.user._id } },
+      { returnDocument: "after" }
+    );
+    if (!updatedGroup) {
+      return res.status(400).json({ success: false, message: "You are no longer a member of this group" });
+    }
+
+    res.status(200).json({ success: true, message: "You left the group successfully", data: updatedGroup });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const deleteGroup = async (req, res, next) => {
+  try {
+    if (!mongoose.Types.ObjectId.isValid(req.params.id)) {
+      return res.status(400).json({ success: false, message: "Invalid group ID" });
+    }
+
+    const group = await Group.findById(req.params.id).select("_id ownerId");
+    if (!group) {
+      return res.status(404).json({ success: false, message: "Group not found" });
+    }
+    if (group.ownerId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({ success: false, message: "Only the group owner can delete this group" });
+    }
+
+    const unresolvedLoan = await Loan.exists({
+      groupId: group._id,
+      status: { $in: unresolvedLoanStatuses },
+    });
+    if (unresolvedLoan) {
+      return res.status(400).json({
+        success: false,
+        message: "Cannot delete the group while requested, booked, or active loans exist",
+      });
+    }
+
+    const deletedGroup = await Group.findOneAndDelete({
+      _id: group._id,
+      ownerId: req.user._id,
+    });
+    if (!deletedGroup) {
+      return res.status(400).json({ success: false, message: "Group could not be deleted" });
+    }
+
+    await Invitation.updateMany(
+      { groupId: group._id, status: "pending" },
+      { $set: { status: "cancelled" } }
+    );
+    await BorrowableItem.updateMany(
+      { groupId: group._id },
+      { $unset: { groupId: 1 } }
+    );
+    await BorrowableItem.updateMany(
+      { sharedWithGroups: group._id },
+      { $pull: { sharedWithGroups: group._id } }
+    );
+
+    res.status(200).json({
+      success: true,
+      message: "Group deleted successfully",
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 const getGroupItems = async (req, res, next) => {
   try {
-    const group = await Group.findById(req.params.id);
+    const group = await getGroupForMember(req.params.id, req.user._id);
 
     if (!group) {
       return res.status(404).json({
@@ -108,21 +293,9 @@ const getGroupItems = async (req, res, next) => {
       });
     }
 
-    if (!isGroupMember(group, req.user._id)) {
-      return res.status(403).json({
-        success: false,
-        message: "You are not a member of this group",
-      });
-    }
-
     const { search, category, status } = req.query;
-    const query = {
-      $or: [
-        { ownerId: req.user._id, sharingType: "all" },
-        { sharedWithGroups: group._id },
-        { groupId: group._id },
-      ],
-    };
+    const visibilityQuery = await getVisibleItemQuery(req.user._id, group._id);
+    const query = { ...visibilityQuery };
 
     if (search) {
       query.name = { $regex: search, $options: "i" };
@@ -187,126 +360,32 @@ const addItem = async (req, res, next) => {
   }
 };
 
-const createLoan = async (req, res, next) => {
-  try {
-    const group = await Group.findById(req.params.id);
-
-    if (!group) {
-      return res.status(404).json({
-        success: false,
-        message: "Group not found",
-      });
-    }
-
-    if (!isGroupMember(group, req.user._id)) {
-      return res.status(403).json({
-        success: false,
-        message: "You are not a member of this group",
-      });
-    }
-
-    const {
-      itemId,
-      checkoutDate,
-      dueDate,
-      note,
-    } = req.body || {};
-    const borrowerId = req.user._id;
-
-    if (!itemId || !checkoutDate || !dueDate) {
-      return res.status(400).json({
-        success: false,
-        message: "Item, checkout date and due date are required",
-      });
-    }
-
-    const parsedCheckoutDate = new Date(checkoutDate);
-    const parsedDueDate = new Date(dueDate);
-
-    if (
-      Number.isNaN(parsedCheckoutDate.getTime()) ||
-      Number.isNaN(parsedDueDate.getTime())
-    ) {
-      return res.status(400).json({
-        success: false,
-        message: "Checkout date and due date must be valid dates",
-      });
-    }
-
-    if (parsedDueDate < parsedCheckoutDate) {
-      return res.status(400).json({
-        success: false,
-        message: "Due date cannot be before checkout date",
-      });
-    }
-
-    const item = await BorrowableItem.findOne({
-      _id: itemId,
-      groupId: group._id,
-    });
-
-    if (!item) {
-      return res.status(404).json({
-        success: false,
-        message: "Item not found in this group",
-      });
-    }
-
-    if (item.status !== "available") {
-      return res.status(400).json({
-        success: false,
-        message: "Item is not available",
-      });
-    }
-
-    if (!isGroupMember(group, borrowerId)) {
-      return res.status(400).json({
-        success: false,
-        message: "Borrower is not a member of this group",
-      });
-    }
-
-    const loan = await Loan.create({
-      groupId: group._id,
-      itemId,
-      borrowerId,
-      checkoutDate: parsedCheckoutDate,
-      dueDate: parsedDueDate,
-      note: note || "",
-      status: "active",
-    });
-
-    item.status = "borrowed";
-    await item.save();
-
-    res.status(201).json({
-      success: true,
-      data: loan,
-    });
-  } catch (error) {
-    next(error);
-  }
-};
-
 const getGroupLoans = async (req, res, next) => {
   try {
-    const group = await Group.findById(req.params.id);
-
-    if (!group) {
+    const membership = await getGroupForMember(req.params.id, req.user._id);
+    if (!membership) {
       return res.status(404).json({
         success: false,
         message: "Group not found",
       });
     }
 
-    if (!isGroupMember(group, req.user._id)) {
-      return res.status(403).json({
-        success: false,
-        message: "You are not a member of this group",
-      });
+    const bookedLoans = await Loan.find({
+      groupId: membership._id,
+      status: "booked",
+    }).select("itemId");
+    if (bookedLoans.length) {
+      await Loan.updateMany(
+        { _id: { $in: bookedLoans.map(loan => loan._id) }, status: "booked" },
+        { $set: { status: "active" } }
+      );
+      await BorrowableItem.updateMany(
+        { _id: { $in: bookedLoans.map(loan => loan.itemId) }, status: "booked" },
+        { $set: { status: "borrowed" } }
+      );
     }
 
-    const loans = await Loan.find({ groupId: group._id })
+    const loans = await Loan.find({ groupId: membership._id })
       .populate("itemId")
       .populate("borrowerId", "name email");
 
@@ -339,8 +418,8 @@ const getGroupDetails = async (req, res, next) => {
       });
     }
 
-    // Get items for this group
-    const items = await BorrowableItem.find({ groupId: group._id });
+    const visibilityQuery = await getVisibleItemQuery(req.user._id, group._id);
+    const items = await BorrowableItem.find(visibilityQuery);
 
     // Get active loans for this group
     const activeLoans = await Loan.find({
@@ -366,7 +445,7 @@ const getGroupDetails = async (req, res, next) => {
     });
 
     // Also populate owner info for items
-    const itemsWithOwners = await BorrowableItem.find({ groupId: group._id })
+    const itemsWithOwners = await BorrowableItem.find(visibilityQuery)
       .populate("ownerId", "name email");
 
     // Rebuild itemsByMember with populated owner info
@@ -405,9 +484,12 @@ module.exports = {
   createGroup,
   getGroups,
   getGroupMembers,
+  removeGroupMember,
+  leaveGroup,
+  deleteGroup,
   getGroupItems,
   addItem,
-  createLoan,
   getGroupLoans,
   getGroupDetails,
+  getDiscoverableGroups,
 };
