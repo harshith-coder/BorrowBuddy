@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react'
 import GroupIcon from './GroupIcon'
-
-const API = 'http://localhost:3000/api'
+import { API_BASE } from '../config/api'
 const dateText = value => value ? new Date(value).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }) : '—'
 
 function GroupRecordsPage({ type }) {
@@ -18,13 +17,13 @@ function GroupRecordsPage({ type }) {
       try {
         const token = localStorage.getItem('token')
         const headers = { Authorization: `Bearer ${token}` }
-        const groupsResponse = await fetch(`${API}/groups`, { headers })
+        const groupsResponse = await fetch(`${API_BASE}/groups`, { headers })
         const groupsData = await groupsResponse.json()
         if (!groupsResponse.ok || !groupsData.success) throw new Error(groupsData.message || 'Could not load your groups')
         const results = await Promise.all((groupsData.data || []).map(async group => {
           const [recordResponse, memberResponse] = await Promise.all([
-            fetch(`${API}/groups/${group._id}/${isInventory ? 'items' : 'loans'}`, { headers }),
-            fetch(`${API}/groups/${group._id}/members`, { headers }),
+            fetch(`${API_BASE}/groups/${group._id}/${isInventory ? 'items' : 'loans'}`, { headers }),
+            fetch(`${API_BASE}/groups/${group._id}/members`, { headers }),
           ])
           const [recordData, memberData] = await Promise.all([recordResponse.json(), memberResponse.json()])
           if (!recordResponse.ok || !recordData.success) throw new Error(recordData.message || 'Could not load group records')

@@ -6,6 +6,7 @@ import BorrowItemForm from './BorrowItemForm'
 import BorrowedItems from './BorrowedItems'
 import ReturnItemForm from './ReturnItemForm'
 import { loadGroupData } from '../services/groupDataService'
+import { API_BASE } from '../config/api'
 import './ViewGroup.css'
 
 const getId = value => String(value?._id || value?.id || value || '')
@@ -97,7 +98,7 @@ function ViewGroup({ groupId, group, onBack }) {
           status: 'active',
         }
       } else {
-        const response = await fetch(`http://localhost:3000/api/groups/${groupId}/loans`, {
+        const response = await fetch(`${API_BASE}/groups/${groupId}/loans`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({
@@ -167,7 +168,7 @@ function ViewGroup({ groupId, group, onBack }) {
       if (data.source === 'mock') {
         updatedLoan = { status: 'returned', returnDate, returnNote: note }
       } else {
-        const response = await fetch(`http://localhost:3000/api/loans/${getId(returningLoan.loan)}/return`, {
+        const response = await fetch(`${API_BASE}/loans/${getId(returningLoan.loan)}/return`, {
           method: 'PATCH',
           headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
           body: JSON.stringify({ returnDate, note }),

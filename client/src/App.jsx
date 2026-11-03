@@ -3,9 +3,7 @@ import heroImage from './assets/hero-image.png'
 import './App.css'
 import ViewGroup from './components/ViewGroup'
 import GroupRecordsPage from './components/GroupRecordsPage'
-
-const API_BASE = 'http://localhost:3000/api'
-const SERVER_BASE = 'http://localhost:3000'
+import { API_BASE, SERVER_BASE } from './config/api'
 
 async function apiRequest(path, options = {}) {
   const token = localStorage.getItem('token')
@@ -101,7 +99,7 @@ function App() {
   async function fetchGroups() {
     try {
       const token = localStorage.getItem('token')
-      const response = await fetch('http://localhost:3000/api/groups', {
+      const response = await fetch(`${API_BASE}/groups`, {
         headers: {
           'Authorization': `Bearer ${token}`,
         },
@@ -131,7 +129,7 @@ function App() {
       formData.append('categories', JSON.stringify(selectedCategories))
       if (groupImage) formData.append('image', groupImage)
 
-      const groupResponse = await fetch('http://localhost:3000/api/groups', {
+      const groupResponse = await fetch(`${API_BASE}/groups`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${token}`,
@@ -146,7 +144,7 @@ function App() {
 
       for (const member of selectedMemberData) {
         const memberResponse = await fetch(
-          'http://localhost:3000/api/invitations',
+          `${API_BASE}/invitations`,
           {
             method: 'POST',
             headers: {
@@ -187,7 +185,7 @@ function App() {
 
       try {
         const token = localStorage.getItem('token')
-        const response = await fetch('http://localhost:3000/api/auth/users', {
+        const response = await fetch(`${API_BASE}/auth/users`, {
           headers: {
             Authorization: `Bearer ${token}`,
           },
@@ -318,7 +316,7 @@ function App() {
   const handleSignup = async (e) => {
     e.preventDefault()
     try {
-      const response = await fetch('http://localhost:3000/api/auth/register', {
+      const response = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -349,7 +347,7 @@ function App() {
   const handleLogin = async (e) => {
     e.preventDefault()
     try {
-      const response = await fetch('http://localhost:3000/api/auth/login', {
+      const response = await fetch(`${API_BASE}/auth/login`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -685,7 +683,7 @@ function App() {
                           <div key={group._id} className="group-compact-card">
                             <div className="group-compact-left">
                               {group.image ? (
-                                <img src={`http://localhost:3000/${group.image}`} alt={group.name} className="group-compact-image" />
+                                <img src={`${SERVER_BASE}/${group.image}`} alt={group.name} className="group-compact-image" />
                               ) : (
                                 <div className="group-compact-icon">
                                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -1,6 +1,5 @@
 import { createMockGroupData } from '../data/mockGroupData'
-
-const API = 'http://localhost:3000/api'
+import { API_BASE } from '../config/api'
 
 export async function loadGroupData(group, token) {
   if (/^friends(?: group)?$/i.test((group?.name || '').trim())) {
@@ -9,9 +8,9 @@ export async function loadGroupData(group, token) {
 
   const headers = { Authorization: `Bearer ${token}` }
   const [memberResponse, itemResponse, loanResponse] = await Promise.all([
-    fetch(`${API}/groups/${group._id}/members`, { headers }),
-    fetch(`${API}/groups/${group._id}/items`, { headers }),
-    fetch(`${API}/groups/${group._id}/loans`, { headers }),
+    fetch(`${API_BASE}/groups/${group._id}/members`, { headers }),
+    fetch(`${API_BASE}/groups/${group._id}/items`, { headers }),
+    fetch(`${API_BASE}/groups/${group._id}/loans`, { headers }),
   ])
   const [memberData, itemData, loanData] = await Promise.all([
     memberResponse.json(), itemResponse.json(), loanResponse.json(),
