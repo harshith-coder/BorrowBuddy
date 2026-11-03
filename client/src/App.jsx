@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import heroImage from './assets/hero-image.png'
 import './App.css'
+import ViewGroup from './components/ViewGroup'
+import GroupRecordsPage from './components/GroupRecordsPage'
 
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -11,20 +13,22 @@ function App() {
   const [signupData, setSignupData] = useState({ name: '', email: '', password: '' })
   const [loginData, setLoginData] = useState({ email: '', password: '' })
   const [authMessage, setAuthMessage] = useState({ type: '', text: '' })
-  const [isAuthenticated, setIsAuthenticated] = useState(false)
-  const [user, setUser] = useState(null)
+  const [isAuthenticated, setIsAuthenticated] = useState(() => Boolean(localStorage.getItem('token') && localStorage.getItem('user')))
+  const [user, setUser] = useState(() => {
+    try { return JSON.parse(localStorage.getItem('user') || 'null') } catch { return null }
+  })
   const [currentPage, setCurrentPage] = useState('dashboard')
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const [groupName, setGroupName] = useState('')
   const [groupDescription, setGroupDescription] = useState('')
   const [groupImage, setGroupImage] = useState(null)
   const [selectedCategories, setSelectedCategories] = useState([])
-  const [selectedMembers, setSelectedMembers] = useState([])
   const [memberSearchQuery, setMemberSearchQuery] = useState('')
   const [profileImage, setProfileImage] = useState(null)
   const [groups, setGroups] = useState([])
   const [availableMembers, setAvailableMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
+  const [selectedGroupId, setSelectedGroupId] = useState(null)
 
   const categories = [
     { id: 'books', name: 'Books', icon: '📚' },
@@ -67,56 +71,21 @@ function App() {
     )
   }
 
-  const handleCreateGroupLegacy = async () => {
-    if (!groupName.trim()) {
-      alert('Please enter a group name')
-      return
-    }
-
-    const selectedMemberData = availableMembers.filter(m => m.selected)
-    if (selectedMemberData.length === 0) {
-      alert('Please select at least one member')
-      return
-    }
-
-    const formData = new FormData()
-    formData.append('name', groupName)
-    formData.append('description', groupDescription)
-    formData.append('categories', JSON.stringify(selectedCategories))
-    formData.append('members', JSON.stringify(selectedMemberData.map(m => m.id)))
-    if (groupImage) {
-      formData.append('image', groupImage)
-    }
-
+  async function fetchGroups() {
     try {
       const token = localStorage.getItem('token')
       const response = await fetch('http://localhost:3000/api/groups', {
-        method: 'POST',
         headers: {
           'Authorization': `Bearer ${token}`,
         },
-        body: formData,
       })
-
       const data = await response.json()
       if (data.success) {
-        // Reset form
-        setGroupName('')
-        setGroupDescription('')
-        setGroupImage(null)
-        setSelectedCategories([])
-        setAvailableMembers(prev => prev.map(m => ({ ...m, selected: false })))
-        setMemberSearchQuery('')
-        
-        // Navigate to my-groups and refresh
-        setCurrentPage('my-groups')
-        fetchGroups()
-      } else {
-        alert(data.message || 'Failed to create group')
+        setGroups(data.data || [])
       }
     } catch (error) {
-      console.error('Error creating group:', error)
-      alert('Failed to create group')
+      console.error('Error fetching groups:', error)
+      setGroups([])
     }
   }
 
@@ -181,16 +150,6 @@ function App() {
     }
   }
 
-  // Check if user is already logged in
-  useEffect(() => {
-    const token = localStorage.getItem('token')
-    const userData = localStorage.getItem('user')
-    if (token && userData) {
-      setIsAuthenticated(true)
-      setUser(JSON.parse(userData))
-    }
-  }, [])
-
   useEffect(() => {
     if (currentPage !== 'create-group' || !isAuthenticated) return
 
@@ -232,92 +191,15 @@ function App() {
   // Fetch groups when on my-groups page
   useEffect(() => {
     if (currentPage === 'my-groups' && isAuthenticated) {
+      // Loading the remote group list synchronizes this screen with the API.
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       fetchGroups()
     }
   }, [currentPage, isAuthenticated])
 
-  const fetchGroups = async () => {
-    try {
-      const token = localStorage.getItem('token')
-      const response = await fetch('http://localhost:3000/api/groups', {
-        headers: {
-          'Authorization': `Bearer ${token}`,
-        },
-      })
-      const data = await response.json()
-      if (data.success) {
-        // If no groups from backend, show default groups
-        if (data.data.length === 0) {
-          setGroups([
-            {
-              _id: 'default-1',
-              name: 'Friends Group',
-              description: 'Share and borrow everyday items with friends.',
-              categories: ['Books', 'Chargers', 'Sports Equipment'],
-              memberIds: [
-                { name: 'Madhu' },
-                { name: 'Sri' },
-                { name: 'Priya' },
-                { name: 'Anil' },
-                { name: 'Rahul' }
-              ],
-              image: null
-            },
-            {
-              _id: 'default-2',
-              name: 'College Group',
-              description: 'Share lab equipment and project tools with college mates',
-              categories: ['Lab Equipment', 'Project Tools'],
-              memberIds: [
-                { name: 'Sri' },
-                { name: 'Venkat' },
-                { name: 'Rahul' },
-                { name: 'Anil' },
-                { name: 'Kiran' },
-                { name: 'Teja' }
-              ],
-              image: null
-            }
-          ])
-        } else {
-          setGroups(data.data)
-        }
-      }
-    } catch (error) {
-      console.error('Error fetching groups:', error)
-      // On error, show default groups
-      setGroups([
-        {
-          _id: 'default-1',
-          name: 'Friends Group',
-          description: 'Share and borrow everyday items with friends.',
-          categories: ['Books', 'Chargers', 'Sports Equipment'],
-          memberIds: [
-            { name: 'Madhu' },
-            { name: 'Sri' },
-            { name: 'Priya' },
-            { name: 'Anil' },
-            { name: 'Rahul' }
-          ],
-          image: null
-        },
-        {
-          _id: 'default-2',
-          name: 'College Group',
-          description: 'Share lab equipment and project tools with college mates',
-          categories: ['Lab Equipment', 'Project Tools'],
-          memberIds: [
-            { name: 'Sri' },
-            { name: 'Venkat' },
-            { name: 'Rahul' },
-            { name: 'Anil' },
-            { name: 'Kiran' },
-            { name: 'Teja' }
-          ],
-          image: null
-        }
-      ])
-    }
+  const handleViewGroup = (groupId) => {
+    setSelectedGroupId(groupId)
+    setCurrentPage('view-group')
   }
 
   const handleSignup = async (e) => {
@@ -698,7 +580,7 @@ function App() {
                               <p className="group-compact-desc">{group.description || 'No description'}</p>
                             </div>
                             <div className="group-compact-right">
-                              <button className="group-compact-view-btn">
+                              <button className="group-compact-view-btn" onClick={() => handleViewGroup(group._id)}>
                                 View Group
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                   <polyline points="9 18 15 12 9 6" />
@@ -1159,6 +1041,17 @@ function App() {
                 </div>
               </>
             )}
+
+            {currentPage === 'view-group' && (
+              <ViewGroup
+                groupId={selectedGroupId}
+                group={groups.find(group => group._id === selectedGroupId)}
+                onBack={() => setCurrentPage('my-groups')}
+              />
+            )}
+
+            {currentPage === 'inventory' && <GroupRecordsPage type="inventory" />}
+            {currentPage === 'loans' && <GroupRecordsPage type="loans" />}
           </main>
         </div>
       ) : (

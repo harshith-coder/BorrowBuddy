@@ -11,7 +11,8 @@ const {
   createLoan,
   getGroupLoans,
   addGroupMember,
-  getGroupMembers
+  getGroupMembers,
+  getGroupDetails
 } = require("../controllers/groupController.js");
 
 const { protect } = require("../middleware/authMiddleware.js");
@@ -44,6 +45,7 @@ const upload = multer({
 
 router.post("/", protect, upload.single('image'), createGroup);
 router.get("/", protect, getGroups);
+router.get("/:id/details", protect, getGroupDetails);
 
 router.get("/:id/items", protect, getGroupItems);
 router.post("/:id/items", protect, addItem);
