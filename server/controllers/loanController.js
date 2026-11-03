@@ -3,7 +3,6 @@ const BorrowableItem = require("../model/borrowableItem.js");
 const Notification = require("../model/notification.js");
 const Group = require("../model/group.js");
 
-// Request to borrow an item (with self-borrow guard & race-condition check)
 const requestLoan = async (req, res, next) => {
   try {
     const { itemId, dueDate, note, groupId } = req.body;
@@ -30,14 +29,15 @@ const requestLoan = async (req, res, next) => {
     }).select("_id");
     const borrowerGroupIds = borrowerGroups.map((group) => group._id.toString());
     const canAccess = candidate.sharingType === "selected"
-      ? candidate.sharedWithGroups.some((groupId) => borrowerGroupIds.includes(groupId.toString()))
-      : (await Group.exists({
+      ? candidate.sharedWithGroups.some((sharedGroupId) =>
+          borrowerGroupIds.includes(sharedGroupId.toString()))
+      : await Group.exists({
           _id: { $in: borrowerGroupIds },
           $or: [
             { memberIds: candidate.ownerId },
             { ownerId: candidate.ownerId },
           ],
-        }));
+        });
 
     if (!canAccess) {
       return res.status(403).json({
@@ -46,7 +46,6 @@ const requestLoan = async (req, res, next) => {
       });
     }
 
-    // Atomic find-and-update prevents two users from booking simultaneously.
     const item = await BorrowableItem.findOneAndUpdate(
       { _id: itemId, status: "available" },
       { $set: { status: "requested" } },
@@ -54,7 +53,6 @@ const requestLoan = async (req, res, next) => {
     );
 
     if (!item) {
-      // Check if it exists or already booked
       const existing = await BorrowableItem.findById(itemId);
       if (!existing) {
         return res.status(404).json({ success: false, message: "Item not found" });
@@ -75,7 +73,6 @@ const requestLoan = async (req, res, next) => {
       status: "requested",
     });
 
-    // Notify the owner
     await Notification.create({
       recipientId: item.ownerId,
       senderId: borrowerId,
@@ -95,7 +92,6 @@ const requestLoan = async (req, res, next) => {
   }
 };
 
-// Approve borrow request (Owner accepts)
 const approveLoan = async (req, res, next) => {
   try {
     const loan = await Loan.findById(req.params.id).populate("itemId");
@@ -113,10 +109,8 @@ const approveLoan = async (req, res, next) => {
 
     loan.status = "booked";
     await loan.save();
-
     await BorrowableItem.findByIdAndUpdate(loan.itemId._id, { status: "booked" });
 
-    // Notify borrower
     await Notification.create({
       recipientId: loan.borrowerId,
       senderId: req.user._id,
@@ -132,7 +126,6 @@ const approveLoan = async (req, res, next) => {
   }
 };
 
-// Reject borrow request (Owner declines)
 const rejectLoan = async (req, res, next) => {
   try {
     const loan = await Loan.findById(req.params.id).populate("itemId");
@@ -150,11 +143,8 @@ const rejectLoan = async (req, res, next) => {
 
     loan.status = "rejected";
     await loan.save();
-
-    // Release item back to available
     await BorrowableItem.findByIdAndUpdate(loan.itemId._id, { status: "available" });
 
-    // Notify borrower
     await Notification.create({
       recipientId: loan.borrowerId,
       senderId: req.user._id,
@@ -170,51 +160,6 @@ const rejectLoan = async (req, res, next) => {
   }
 };
 
-// Return item (Borrower returns or lender confirms return)
-const returnLoan = async (req, res, next) => {
-  try {
-    const loan = await Loan.findById(req.params.id).populate("itemId");
-
-    if (!loan) {
-      return res.status(404).json({ success: false, message: "Loan not found" });
-    }
-
-    const userId = req.user._id.toString();
-    if (loan.borrowerId.toString() !== userId && loan.lenderId.toString() !== userId) {
-      return res.status(403).json({ success: false, message: "Not authorized to return this loan" });
-    }
-
-    if (!["booked", "active"].includes(loan.status)) {
-      return res.status(400).json({
-        success: false,
-        message: `A ${loan.status} loan cannot be returned`,
-      });
-    }
-
-    loan.returnDate = new Date();
-    loan.status = "returned";
-    await loan.save();
-
-    await BorrowableItem.findByIdAndUpdate(loan.itemId._id, { status: "available" });
-
-    // Notify the other party
-    const targetUserId = loan.borrowerId.toString() === userId ? loan.lenderId : loan.borrowerId;
-    await Notification.create({
-      recipientId: targetUserId,
-      senderId: req.user._id,
-      type: "item_returned",
-      title: "Item Returned",
-      message: `"${loan.itemId.name}" has been marked as returned and is now available.`,
-      data: { loanId: loan._id, itemId: loan.itemId._id },
-    });
-
-    res.status(200).json({ success: true, data: loan });
-  } catch (error) {
-    next(error);
-  }
-};
-
-// Get all loans where user is borrower or lender
 const getUserLoans = async (req, res, next) => {
   try {
     const userId = req.user._id;
@@ -228,6 +173,71 @@ const getUserLoans = async (req, res, next) => {
       .sort({ createdAt: -1 });
 
     res.status(200).json({ success: true, data: loans });
+  } catch (error) {
+    next(error);
+  }
+};
+
+const returnLoan = async (req, res, next) => {
+  try {
+    const loan = await Loan.findById(req.params.id).populate("itemId");
+
+    if (!loan) {
+      return res.status(404).json({ success: false, message: "Loan not found" });
+    }
+
+    const group = await Group.findById(loan.groupId).select("ownerId memberIds");
+    if (!group) {
+      return res.status(404).json({ success: false, message: "Group not found" });
+    }
+
+    const userId = req.user._id.toString();
+    const isGroupMember = group.ownerId.toString() === userId ||
+      group.memberIds.some((memberId) => memberId.toString() === userId);
+    if (!isGroupMember) {
+      return res.status(403).json({ success: false, message: "You are not a member of this group" });
+    }
+
+    if (loan.status === "returned") {
+      return res.status(400).json({ success: false, message: "Loan has already been returned" });
+    }
+
+    const requestedReturnDate = req.body?.returnDate ? new Date(req.body.returnDate) : new Date();
+    if (Number.isNaN(requestedReturnDate.getTime())) {
+      return res.status(400).json({ success: false, message: "Return date must be valid" });
+    }
+
+    const returnNote = typeof req.body?.note === "string" ? req.body.note.trim() : "";
+    if (returnNote.length > 500) {
+      return res.status(400).json({ success: false, message: "Return note cannot be more than 500 characters" });
+    }
+
+    // Conditional update prevents two return requests from creating duplicate transitions.
+    const returnedLoan = await Loan.findOneAndUpdate(
+      { _id: loan._id, status: { $in: ["active", "overdue"] } },
+      { $set: { returnDate: requestedReturnDate, returnNote, status: "returned" } },
+      { new: true, runValidators: true }
+    );
+    if (!returnedLoan) {
+      return res.status(400).json({ success: false, message: "Loan has already been returned" });
+    }
+
+    try {
+      const item = await BorrowableItem.findOneAndUpdate(
+        { _id: loan.itemId, groupId: loan.groupId },
+        { $set: { status: "available" } },
+        { new: true }
+      );
+      if (!item) throw new Error("The loan item could not be found in its group");
+    } catch (itemError) {
+      await Loan.findOneAndUpdate(
+        { _id: loan._id, status: "returned" },
+        { $set: { status: loan.status }, $unset: { returnDate: 1, returnNote: 1 } }
+      );
+      throw itemError;
+    }
+
+    return res.status(200).json({ success: true, data: returnedLoan });
   } catch (error) {
     next(error);
   }

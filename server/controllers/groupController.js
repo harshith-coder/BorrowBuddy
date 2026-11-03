@@ -175,8 +175,6 @@ const addItem = async (req, res, next) => {
       category: category.trim(),
       description: description ? description.trim() : "",
       ownerId: req.user._id,
-      sharingType: "selected",
-      sharedWithGroups: [group._id],
       status: "available",
     });
 
@@ -200,25 +198,25 @@ const createLoan = async (req, res, next) => {
       });
     }
 
-    if (!isManager(group, req.user._id)) {
+    if (!isGroupMember(group, req.user._id)) {
       return res.status(403).json({
         success: false,
-        message: "Only a group manager can create loans",
+        message: "You are not a member of this group",
       });
     }
 
     const {
       itemId,
-      borrowerId,
       checkoutDate,
       dueDate,
       note,
     } = req.body || {};
+    const borrowerId = req.user._id;
 
-    if (!itemId || !borrowerId || !checkoutDate || !dueDate) {
+    if (!itemId || !checkoutDate || !dueDate) {
       return res.status(400).json({
         success: false,
-        message: "Item, borrower, checkout date and due date are required",
+        message: "Item, checkout date and due date are required",
       });
     }
 
@@ -321,6 +319,88 @@ const getGroupLoans = async (req, res, next) => {
   }
 };
 
+const getGroupDetails = async (req, res, next) => {
+  try {
+    const group = await Group.findById(req.params.id)
+      .populate("memberIds", "name email avatar")
+      .populate("ownerId", "name email");
+
+    if (!group) {
+      return res.status(404).json({
+        success: false,
+        message: "Group not found",
+      });
+    }
+
+    if (!isGroupMember(group, req.user._id)) {
+      return res.status(403).json({
+        success: false,
+        message: "You are not a member of this group",
+      });
+    }
+
+    // Get items for this group
+    const items = await BorrowableItem.find({ groupId: group._id });
+
+    // Get active loans for this group
+    const activeLoans = await Loan.find({
+      groupId: group._id,
+      status: { $in: ["active", "overdue"] },
+    })
+      .populate({
+        path: "itemId",
+        populate: { path: "ownerId", select: "name email" },
+      })
+      .populate("borrowerId", "name email");
+
+    // Get items per member
+    const itemsByMember = {};
+    items.forEach(item => {
+      if (item.ownerId) {
+        const ownerId = item.ownerId.toString();
+        if (!itemsByMember[ownerId]) {
+          itemsByMember[ownerId] = [];
+        }
+        itemsByMember[ownerId].push(item);
+      }
+    });
+
+    // Also populate owner info for items
+    const itemsWithOwners = await BorrowableItem.find({ groupId: group._id })
+      .populate("ownerId", "name email");
+
+    // Rebuild itemsByMember with populated owner info
+    const itemsByMemberWithOwners = {};
+    itemsWithOwners.forEach(item => {
+      if (item.ownerId) {
+        const ownerId = item.ownerId._id.toString();
+        if (!itemsByMemberWithOwners[ownerId]) {
+          itemsByMemberWithOwners[ownerId] = [];
+        }
+        itemsByMemberWithOwners[ownerId].push(item);
+      }
+    });
+
+    res.status(200).json({
+      success: true,
+      data: {
+        group,
+        members: group.memberIds,
+        items: itemsWithOwners,
+        activeLoans,
+        itemsByMember: itemsByMemberWithOwners,
+        stats: {
+          memberCount: group.memberIds.length,
+          itemCount: items.length,
+          activeLoanCount: activeLoans.length,
+        }
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
 module.exports = {
   createGroup,
   getGroups,
@@ -329,4 +409,5 @@ module.exports = {
   addItem,
   createLoan,
   getGroupLoans,
+  getGroupDetails,
 };

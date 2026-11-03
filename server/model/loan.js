@@ -40,6 +40,12 @@ const loanSchema = new mongoose.Schema(
       default: "",
       trim: true,
     },
+    returnNote: {
+      type: String,
+      default: "",
+      trim: true,
+      maxlength: [500, "Return note cannot be more than 500 characters"],
+    },
     status: {
       type: String,
       enum: ["requested", "booked", "active", "returned", "rejected", "cancelled"],

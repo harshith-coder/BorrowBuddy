@@ -18,11 +18,19 @@ const { notFound, errorHandler } = require("./middleware/errorMiddleware.js");
 
 const app = express();
 const httpServer = http.createServer(app);
-const io = new Server(httpServer, {
-  cors: {
-    origin: "*",
-    methods: ["GET", "POST"],
+const corsOptions = {
+  origin: (origin, callback) => {
+    if (!origin || Constants.CORS_ORIGINS.includes(origin)) {
+      return callback(null, true);
+    }
+
+    return callback(new Error("Origin is not allowed by CORS"));
   },
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Origin", "X-Requested-With", "Content-Type", "Accept", "Authorization"],
+};
+const io = new Server(httpServer, {
+  cors: corsOptions,
 });
 
 io.use((socket, next) => {
@@ -42,11 +50,7 @@ io.on("connection", (socket) => {
 });
 setSocketServer(io);
 
-app.use(cors({
-  origin: "*",
-  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-  allowedHeaders: ["Origin", "X-Requested-With", "Content-Type", "Accept", "Authorization"]
-}));
+app.use(cors(corsOptions));
 
 // Create uploads directory if it doesn't exist
 const fs = require('fs');
