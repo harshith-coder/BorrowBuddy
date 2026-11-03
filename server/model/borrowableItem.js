@@ -5,7 +5,7 @@ const borrowableItemSchema = new mongoose.Schema(
     groupId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "Group",
-      required: [true, "Item must belong to a group"],
+      // Optional if item is shared to multiple selected groups or all groups
       index: true,
     },
     name: {
@@ -28,18 +28,31 @@ const borrowableItemSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["available", "borrowed", "maintenance", "retired"],
+      enum: ["available", "requested", "booked", "borrowed", "maintenance", "retired"],
       default: "available",
       index: true,
     },
     ownerId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
+      required: true,
+      index: true,
     },
     imageUrl: {
       type: String,
       default: "",
     },
+    sharingType: {
+      type: String,
+      enum: ["all", "selected"],
+      default: "all",
+    },
+    sharedWithGroups: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: "Group",
+      },
+    ],
   },
   {
     timestamps: true,

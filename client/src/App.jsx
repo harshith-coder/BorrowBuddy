@@ -4,6 +4,26 @@ import './App.css'
 import ViewGroup from './components/ViewGroup'
 import GroupRecordsPage from './components/GroupRecordsPage'
 
+const API_BASE = 'http://localhost:3000/api'
+const SERVER_BASE = 'http://localhost:3000'
+
+async function apiRequest(path, options = {}) {
+  const token = localStorage.getItem('token')
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: {
+      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
+      ...(options.headers || {}),
+      Authorization: `Bearer ${token}`,
+    },
+  })
+  const data = await response.json()
+  if (!response.ok || !data.success) {
+    throw new Error(data.message || 'Request failed')
+  }
+  return data
+}
+
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
   const [showSignup, setShowSignup] = useState(false)
@@ -29,6 +49,13 @@ function App() {
   const [availableMembers, setAvailableMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
   const [selectedGroupId, setSelectedGroupId] = useState(null)
+  const [items, setItems] = useState([])
+  const [loans, setLoans] = useState([])
+  const [notifications, setNotifications] = useState([])
+  const [unreadCount, setUnreadCount] = useState(0)
+  const [invitations, setInvitations] = useState([])
+  const [dataLoading, setDataLoading] = useState(false)
+  const [dataError, setDataError] = useState('')
 
   const categories = [
     { id: 'books', name: 'Books', icon: '📚' },
@@ -96,20 +123,20 @@ function App() {
     }
 
     const selectedMemberData = availableMembers.filter(member => member.selected)
-    if (selectedMemberData.length === 0) {
-      alert('Please select at least one member')
-      return
-    }
-
     try {
       const token = localStorage.getItem('token')
+      const formData = new FormData()
+      formData.append('name', groupName.trim())
+      formData.append('description', groupDescription.trim())
+      formData.append('categories', JSON.stringify(selectedCategories))
+      if (groupImage) formData.append('image', groupImage)
+
       const groupResponse = await fetch('http://localhost:3000/api/groups', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           Authorization: `Bearer ${token}`,
         },
-        body: JSON.stringify({ name: groupName.trim() }),
+        body: formData,
       })
       const groupData = await groupResponse.json()
 
@@ -119,20 +146,23 @@ function App() {
 
       for (const member of selectedMemberData) {
         const memberResponse = await fetch(
-          `http://localhost:3000/api/groups/${groupData.data._id}/members`,
+          'http://localhost:3000/api/invitations',
           {
             method: 'POST',
             headers: {
               'Content-Type': 'application/json',
               Authorization: `Bearer ${token}`,
             },
-            body: JSON.stringify({ userId: member.id }),
+            body: JSON.stringify({
+              groupId: groupData.data._id,
+              inviteeId: member.id,
+            }),
           }
         )
         const memberData = await memberResponse.json()
 
         if (!memberResponse.ok || !memberData.success) {
-          throw new Error(memberData.message || `Failed to add ${member.name}`)
+          throw new Error(memberData.message || `Failed to invite ${member.name}`)
         }
       }
 
@@ -143,7 +173,6 @@ function App() {
       setAvailableMembers(prev => prev.map(member => ({ ...member, selected: false })))
       setMemberSearchQuery('')
       setCurrentPage('my-groups')
-      fetchGroups()
     } catch (error) {
       console.error('Error creating group:', error)
       alert(error.message || 'Failed to create group')
@@ -200,6 +229,90 @@ function App() {
   const handleViewGroup = (groupId) => {
     setSelectedGroupId(groupId)
     setCurrentPage('view-group')
+  }
+
+  const imageUrl = (imagePath) => imagePath ? `${SERVER_BASE}/${imagePath}` : ''
+
+  const loadPageData = async (page) => {
+    if (!isAuthenticated) return
+    setDataLoading(true)
+    setDataError('')
+    try {
+      if (page === 'inventory') {
+        const data = await apiRequest('/items')
+        setItems(data.data || [])
+      } else if (page === 'loans' || page === 'history') {
+        const data = await apiRequest('/loans')
+        setLoans(data.data || [])
+      } else if (page === 'invitations') {
+        const data = await apiRequest('/invitations')
+        setInvitations(data.data || [])
+      } else if (page === 'notifications') {
+        const data = await apiRequest('/notifications')
+        const nextNotifications = data.data || []
+        setNotifications(nextNotifications)
+        setUnreadCount(nextNotifications.filter(notification => !notification.read).length)
+      }
+    } catch (error) {
+      console.error(`Error loading ${page}:`, error)
+      setDataError(error.message || 'Could not load data')
+    } finally {
+      setDataLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => loadPageData(currentPage), 0)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [currentPage, isAuthenticated])
+
+  const handleBorrow = async (itemId) => {
+    try {
+      await apiRequest('/loans', {
+        method: 'POST',
+        body: JSON.stringify({ itemId }),
+      })
+      await loadPageData('inventory')
+    } catch (error) {
+      setDataError(error.message || 'Could not request item')
+    }
+  }
+
+  const handleLoanAction = async (loanId, action) => {
+    try {
+      await apiRequest(`/loans/${loanId}/${action}`, { method: 'PATCH' })
+      await loadPageData(currentPage)
+    } catch (error) {
+      setDataError(error.message || 'Could not update loan')
+    }
+  }
+
+  const handleInvitation = async (invitationId, action) => {
+    try {
+      await apiRequest(`/invitations/${invitationId}/${action}`, { method: 'PATCH' })
+      await loadPageData('invitations')
+    } catch (error) {
+      setDataError(error.message || 'Could not update invitation')
+    }
+  }
+
+  const handleMarkNotificationRead = async (notificationId) => {
+    try {
+      await apiRequest(`/notifications/${notificationId}/read`, { method: 'PATCH' })
+      await loadPageData('notifications')
+    } catch (error) {
+      setDataError(error.message || 'Could not update notification')
+    }
+  }
+
+  const handleMarkAllNotificationsRead = async () => {
+    try {
+      await apiRequest('/notifications/read-all', { method: 'PATCH' })
+      await loadPageData('notifications')
+    } catch (error) {
+      setDataError(error.message || 'Could not update notifications')
+    }
   }
 
   const handleSignup = async (e) => {
@@ -337,6 +450,20 @@ function App() {
                 </svg>
                 History
               </a>
+              <a href="#" className={`sidebar-link ${currentPage === 'invitations' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('invitations') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M4 4h16v16H4z" />
+                  <path d="M4 7l8 5 8-5" />
+                </svg>
+                Invitations
+              </a>
+              <a href="#" className={`sidebar-link ${currentPage === 'notifications' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('notifications') }}>
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
+                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                </svg>
+                Notifications {unreadCount > 0 && `(${unreadCount})`}
+              </a>
               <a href="#" className={`sidebar-link ${currentPage === 'profile' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('profile') }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
@@ -384,7 +511,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">12</div>
+                      <div className="stat-value">{items.length}</div>
                       <div className="stat-label">Total Items</div>
                     </div>
                   </div>
@@ -399,7 +526,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">3</div>
+                      <div className="stat-value">{loans.filter(loan => ['requested', 'booked', 'active'].includes(loan.status)).length}</div>
                       <div className="stat-label">Active Loans</div>
                     </div>
                   </div>
@@ -412,7 +539,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">1</div>
+                      <div className="stat-value">{loans.filter(loan => loan.dueDate && new Date(loan.dueDate) < new Date() && !['returned', 'rejected'].includes(loan.status)).length}</div>
                       <div className="stat-label">Overdue</div>
                     </div>
                   </div>
@@ -427,7 +554,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">2</div>
+                      <div className="stat-value">{groups.length}</div>
                       <div className="stat-label">Groups</div>
                     </div>
                   </div>
@@ -964,6 +1091,85 @@ function App() {
                       </button>
                     </div>
                   </div>
+                </div>
+              </>
+            )}
+
+            {currentPage === 'inventory' && (
+              <>
+                <header className="dashboard-header">
+                  <div className="header-content">
+                    <h1 className="dashboard-greeting">Inventory</h1>
+                    <p className="dashboard-subtitle">Browse items shared with your groups and manage your own items.</p>
+                  </div>
+                  <button className="create-group-btn" disabled>+ Add Item</button>
+                </header>
+                {dataError && <div className="auth-message error">{dataError}</div>}
+                {dataLoading ? <div className="no-groups-message"><p>Loading inventory...</p></div> : (
+                  <div className="inventory-grid">
+                    {items.length === 0 ? <div className="no-groups-message"><p>No accessible items yet.</p></div> : items.map(item => (
+                      <article className="item-card" key={item._id}>
+                        <div className="item-card-image-box">
+                          {item.imageUrl ? <img className="item-card-image" src={imageUrl(item.imageUrl)} alt={item.name} /> : <div className="item-card-placeholder"><span>📦</span><span>No image</span></div>}
+                          <span className={`item-card-status-badge badge-${item.status}`}>{item.status}</span>
+                        </div>
+                        <div className="item-card-content">
+                          <h3 className="item-card-title">{item.name}</h3>
+                          <span className="item-card-category">{item.category}</span>
+                          <p className="item-card-desc">{item.description || 'No description provided.'}</p>
+                          <div className="item-card-meta"><span>Owner: {item.ownerId?.name || 'You'}</span></div>
+                          <button className="btn-borrow" disabled={item.status !== 'available' || item.ownerId?._id === user?._id} onClick={() => handleBorrow(item._id)}>
+                            {item.ownerId?._id === user?._id ? 'Your item' : item.status === 'available' ? 'Request to borrow' : item.status}
+                          </button>
+                        </div>
+                      </article>
+                    ))}
+                  </div>
+                )}
+              </>
+            )}
+
+            {(currentPage === 'loans' || currentPage === 'history') && (
+              <>
+                <header className="dashboard-header">
+                  <div className="header-content">
+                    <h1 className="dashboard-greeting">{currentPage === 'loans' ? 'Loans' : 'Loan History'}</h1>
+                    <p className="dashboard-subtitle">Track requests, active loans, and returns.</p>
+                  </div>
+                </header>
+                {dataError && <div className="auth-message error">{dataError}</div>}
+                <div className="loans-table-wrapper">
+                  <table className="loans-table">
+                    <thead><tr><th>Item</th><th>Role</th><th>Other party</th><th>Status</th><th>Due</th><th>Action</th></tr></thead>
+                    <tbody>
+                      {loans.filter(loan => currentPage === 'history' ? ['returned', 'rejected', 'cancelled'].includes(loan.status) : !['returned', 'rejected', 'cancelled'].includes(loan.status)).map(loan => {
+                        const borrower = loan.borrowerId?._id === user?._id
+                        const otherParty = borrower ? loan.lenderId?.name : loan.borrowerId?.name
+                        const action = loan.status === 'requested' && !borrower ? 'approve' : loan.status === 'requested' && borrower ? 'reject' : loan.status === 'booked' || loan.status === 'active' ? 'return' : null
+                        return <tr key={loan._id}><td>{loan.itemId?.name || 'Item'}</td><td>{borrower ? 'Borrower' : 'Owner'}</td><td>{otherParty || '—'}</td><td>{loan.status}</td><td>{loan.dueDate ? new Date(loan.dueDate).toLocaleDateString() : '—'}</td><td>{action && <button className="btn-borrow" onClick={() => handleLoanAction(loan._id, action)}>{action}</button>}{loan.status === 'requested' && !borrower && <button className="btn-cancel" onClick={() => handleLoanAction(loan._id, 'reject')}>Reject</button>}</td></tr>
+                      })}
+                    </tbody>
+                  </table>
+                  {loans.filter(loan => currentPage === 'history' ? ['returned', 'rejected', 'cancelled'].includes(loan.status) : !['returned', 'rejected', 'cancelled'].includes(loan.status)).length === 0 && <div className="no-groups-message"><p>No loans to show.</p></div>}
+                </div>
+              </>
+            )}
+
+            {currentPage === 'invitations' && (
+              <>
+                <header className="dashboard-header"><div className="header-content"><h1 className="dashboard-greeting">Invitations</h1><p className="dashboard-subtitle">Accept or decline invitations before joining a group.</p></div></header>
+                {dataError && <div className="auth-message error">{dataError}</div>}
+                <div className="loans-table-wrapper"><table className="loans-table"><thead><tr><th>Group</th><th>Invited by</th><th>Status</th><th>Action</th></tr></thead><tbody>
+                  {invitations.map(invitation => <tr key={invitation._id}><td>{invitation.groupId?.name || 'Group'}</td><td>{invitation.inviterId?.name || 'Member'}</td><td>{invitation.status}</td><td>{invitation.status === 'pending' && <><button className="btn-borrow" onClick={() => handleInvitation(invitation._id, 'accept')}>Accept</button><button className="btn-cancel" onClick={() => handleInvitation(invitation._id, 'reject')}>Decline</button></>}</td></tr>)}
+                </tbody></table>{invitations.length === 0 && <div className="no-groups-message"><p>No invitations.</p></div>}</div>
+              </>
+            )}
+
+            {currentPage === 'notifications' && (
+              <>
+                <header className="dashboard-header"><div className="header-content"><h1 className="dashboard-greeting">Notifications</h1><p className="dashboard-subtitle">Stay updated on invitations, borrow requests, and returns.</p></div><button className="btn-mark-all" onClick={handleMarkAllNotificationsRead}>Mark all as read</button></header>
+                <div className="notification-list">
+                  {notifications.length === 0 ? <div className="no-notifications">No notifications.</div> : notifications.map(notification => <div key={notification._id} className={`notification-item ${notification.read ? '' : 'unread'}`} onClick={() => !notification.read && handleMarkNotificationRead(notification._id)}><div className="notification-icon">!</div><div className="notification-content"><div className="notification-item-title">{notification.title}</div><div className="notification-item-msg">{notification.message}</div><div className="notification-item-time">{new Date(notification.createdAt).toLocaleString()}</div></div></div>)}
                 </div>
               </>
             )}

@@ -53,6 +53,5 @@ router.post("/:id/items", protect, addItem);
 router.post("/:id/loans", protect, createLoan);
 router.get("/:id/loans", protect, getGroupLoans);
 
-router.post("/:id/members", protect, addGroupMember);
 router.get("/:id/members", protect, getGroupMembers);
 module.exports = router;
