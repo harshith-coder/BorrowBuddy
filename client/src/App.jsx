@@ -2,25 +2,10 @@ import { useState, useEffect } from 'react'
 import heroImage from './assets/hero-image.png'
 import './App.css'
 import ViewGroup from './components/ViewGroup'
-import GroupRecordsPage from './components/GroupRecordsPage'
-import { API_BASE, SERVER_BASE } from './config/api'
-
-async function apiRequest(path, options = {}) {
-  const token = localStorage.getItem('token')
-  const response = await fetch(`${API_BASE}${path}`, {
-    ...options,
-    headers: {
-      ...(options.body instanceof FormData ? {} : { 'Content-Type': 'application/json' }),
-      ...(options.headers || {}),
-      Authorization: `Bearer ${token}`,
-    },
-  })
-  const data = await response.json()
-  if (!response.ok || !data.success) {
-    throw new Error(data.message || 'Request failed')
-  }
-  return data
-}
+import Inventory from './components/Inventory/Inventory'
+import GroupItemCount from './components/Inventory/GroupItemCount'
+import { BorrowBuddyProvider } from './context/BorrowBuddyContext'
+import { apiRequest, getAssetUrl } from './services/apiClient'
 
 function App() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false)
@@ -44,21 +29,19 @@ function App() {
   const [memberSearchQuery, setMemberSearchQuery] = useState('')
   const [profileImage, setProfileImage] = useState(null)
   const [groups, setGroups] = useState([])
+  const [discoverableGroups, setDiscoverableGroups] = useState([])
   const [availableMembers, setAvailableMembers] = useState([])
   const [membersLoading, setMembersLoading] = useState(false)
   const [selectedGroupId, setSelectedGroupId] = useState(null)
-  const [items, setItems] = useState([])
   const [loans, setLoans] = useState([])
   const [notifications, setNotifications] = useState([])
   const [unreadCount, setUnreadCount] = useState(0)
+  const [notificationsLoading, setNotificationsLoading] = useState(false)
   const [invitations, setInvitations] = useState([])
-  const [dataLoading, setDataLoading] = useState(false)
+  const [ownerRequests, setOwnerRequests] = useState([])
   const [dataError, setDataError] = useState('')
-  const [groupSearchQuery, setGroupSearchQuery] = useState('')
-  const [discoverQuery, setDiscoverQuery] = useState('')
-  const [discoverableGroups, setDiscoverableGroups] = useState([])
-  const [discoverLoading, setDiscoverLoading] = useState(false)
-  const [discoverError, setDiscoverError] = useState('')
+  const [loanActionId, setLoanActionId] = useState('')
+  const [currentTime] = useState(() => Date.now())
 
   const categories = [
     { id: 'books', name: 'Books', icon: '📚' },
@@ -77,6 +60,7 @@ function App() {
         alert('File size must be less than 2MB')
         return
       }
+
       if (!['image/png', 'image/jpeg', 'image/jpg'].includes(file.type)) {
         alert('Only PNG and JPG files are allowed')
         return
@@ -103,7 +87,8 @@ function App() {
 
   async function fetchGroups() {
     try {
-      const data = await apiRequest('/groups')
+      const token = localStorage.getItem('token')
+      const data = await apiRequest('/groups', {}, token)
       setGroups(data.data || [])
     } catch (error) {
       console.error('Error fetching groups:', error)
@@ -143,40 +128,17 @@ function App() {
       formData.append('categories', JSON.stringify(selectedCategories))
       if (groupImage) formData.append('image', groupImage)
 
-      const groupResponse = await fetch(`${API_BASE}/groups`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${token}`,
-        },
-        body: formData,
-      })
-      const groupData = await groupResponse.json()
-
-      if (!groupResponse.ok || !groupData.success) {
-        throw new Error(groupData.message || 'Failed to create group')
-      }
+      const groupData = await apiRequest('/groups', { method: 'POST', body: formData }, token)
 
       const selectedMemberData = availableMembers.filter(member => member.selected)
       for (const member of selectedMemberData) {
-        const memberResponse = await fetch(
-          `${API_BASE}/invitations`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              Authorization: `Bearer ${token}`,
-            },
-            body: JSON.stringify({
-              groupId: groupData.data._id,
-              invitedUserId: member.id,
-            }),
-          }
-        )
-        const memberData = await memberResponse.json()
-
-        if (!memberResponse.ok || !memberData.success) {
-          throw new Error(memberData.message || `Failed to invite ${member.name}`)
-        }
+        await apiRequest('/invitations', {
+          method: 'POST',
+          body: JSON.stringify({
+            groupId: groupData.data._id,
+            inviteeId: member.id,
+          }),
+        }, token)
       }
 
       setGroupName('')
@@ -204,16 +166,7 @@ function App() {
 
       try {
         const token = localStorage.getItem('token')
-        const response = await fetch(`${API_BASE}/auth/users`, {
-          headers: {
-            Authorization: `Bearer ${token}`,
-          },
-        })
-        const data = await response.json()
-
-        if (!response.ok || !data.success) {
-          throw new Error(data.message || 'Failed to load users')
-        }
+        const data = await apiRequest('/auth/users', {}, token)
 
         setAvailableMembers(
           data.data.map(member => ({
@@ -240,6 +193,9 @@ function App() {
       // Loading the remote group list synchronizes this screen with the API.
       // eslint-disable-next-line react-hooks/set-state-in-effect
       fetchGroups()
+      apiRequest('/groups/discover')
+        .then(data => setDiscoverableGroups(data.data || []))
+        .catch(error => setDataError(error.message || 'Could not load discoverable groups'))
     }
   }, [currentPage, isAuthenticated])
 
@@ -257,7 +213,12 @@ function App() {
     setCurrentPage('view-group')
   }
 
-  const imageUrl = (imagePath) => imagePath ? `${SERVER_BASE}/${imagePath}` : ''
+  const handleDeleteGroup = async groupId => {
+    await apiRequest(`/groups/${groupId}`, { method: 'DELETE' })
+    await fetchGroups()
+    setSelectedGroupId(null)
+    setCurrentPage('my-groups')
+  }
 
   const loadNotifications = async () => {
     try {
@@ -273,68 +234,113 @@ function App() {
 
   const loadPageData = async (page) => {
     if (!isAuthenticated) return
-    setDataLoading(true)
     setDataError('')
     try {
-      if (page === 'inventory') {
-        const data = await apiRequest('/items')
-        setItems(data.data || [])
-      } else if (page === 'loans' || page === 'history') {
+      if (page === 'dashboard' || page === 'loans' || page === 'history') {
         const data = await apiRequest('/loans')
         setLoans(data.data || [])
       } else if (page === 'invitations') {
-        const data = await apiRequest('/invitations/me')
+        const [data, requests] = await Promise.all([
+          apiRequest('/invitations/me'),
+          apiRequest('/invitations/owner-requests'),
+        ])
         setInvitations(data.data || [])
+        setOwnerRequests(requests.data || [])
       } else if (page === 'notifications') {
-        await loadNotifications()
+        setNotificationsLoading(true)
+        const data = await apiRequest('/notifications')
+        const nextNotifications = data.data || []
+        setNotifications(nextNotifications)
+        setUnreadCount(nextNotifications.filter(notification => !notification.read).length)
       }
     } catch (error) {
       console.error(`Error loading ${page}:`, error)
       setDataError(error.message || 'Could not load data')
     } finally {
-      setDataLoading(false)
+      if (page === 'notifications') setNotificationsLoading(false)
     }
   }
 
   useEffect(() => {
-    const timer = window.setTimeout(() => loadPageData(currentPage), 0)
+    const pageToLoad = currentPage === 'inventory' ? 'invitations' : currentPage
+    const timer = window.setTimeout(() => loadPageData(pageToLoad), 0)
     return () => window.clearTimeout(timer)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentPage, isAuthenticated])
 
-  useEffect(() => {
-    if (!isAuthenticated) return
-    const timer = window.setTimeout(loadNotifications, 0)
-    return () => window.clearTimeout(timer)
-  }, [isAuthenticated])
-
-  const handleBorrow = async (itemId) => {
-    try {
-      await apiRequest('/loans', {
-        method: 'POST',
-        body: JSON.stringify({ itemId }),
-      })
-      await loadPageData('inventory')
-    } catch (error) {
-      setDataError(error.message || 'Could not request item')
-    }
+  const unresolvedLoans = loans.filter(loan => ['requested', 'booked', 'active'].includes(loan.status))
+  const overdueLoans = unresolvedLoans.filter(loan => loan.dueDate && new Date(loan.dueDate).getTime() < currentTime)
+  const recentLoans = [...loans]
+    .sort((a, b) => new Date(b.updatedAt || b.createdAt) - new Date(a.updatedAt || a.createdAt))
+    .slice(0, 5)
+  const relativeActivityTime = value => {
+    const elapsedDays = Math.max(0, Math.floor((currentTime - new Date(value).getTime()) / 86400000))
+    return elapsedDays === 0 ? 'Today' : elapsedDays === 1 ? 'Yesterday' : `${elapsedDays} days ago`
+  }
+  const activityLabel = loan => {
+    const itemName = loan.itemId?.name || 'Item'
+    const person = loan.borrowerId?._id === user?._id ? loan.lenderId?.name : loan.borrowerId?.name
+    const name = person || 'A member'
+    if (loan.status === 'returned') return `${itemName} returned by ${name}`
+    if (loan.status === 'rejected') return `${itemName} borrow request rejected`
+    if (loan.status === 'requested') return `${itemName} borrow requested by ${name}`
+    return `${itemName} borrowed by ${name}`
   }
 
   const handleLoanAction = async (loanId, action) => {
+    if (loanActionId) return
+    setLoanActionId(loanId)
     try {
       await apiRequest(`/loans/${loanId}/${action}`, { method: 'PATCH' })
       await loadPageData(currentPage)
     } catch (error) {
       setDataError(error.message || 'Could not update loan')
+    } finally {
+      setLoanActionId('')
     }
   }
 
   const handleInvitation = async (invitationId, action) => {
     try {
       await apiRequest(`/invitations/${invitationId}/${action}`, { method: 'PATCH' })
-      await Promise.all([loadPageData('invitations'), loadPageData('notifications')])
+      await loadPageData('invitations')
+      if (action === 'accept') {
+        await Promise.all([
+          fetchGroups(),
+          apiRequest('/groups/discover')
+            .then(data => setDiscoverableGroups(data.data || []))
+            .catch(error => setDataError(error.message || 'Could not refresh discoverable groups')),
+        ])
+      }
+      return true
     } catch (error) {
       setDataError(error.message || 'Could not update invitation')
+      return false
+    }
+
+  }
+
+  const handleJoinRequest = async groupId => {
+    try {
+      await apiRequest('/invitations/requests', {
+        method: 'POST',
+        body: JSON.stringify({ groupId }),
+      })
+      setDiscoverableGroups(current => current.filter(group => group._id !== groupId))
+      setDataError('')
+    } catch (error) {
+      setDataError(error.message || 'Could not send membership request')
+    }
+  }
+
+  const handleMembershipRequest = async (requestId, action) => {
+    try {
+      await apiRequest(`/invitations/${requestId}/${action === 'approve' ? 'approve' : 'reject-request'}`, {
+        method: 'PATCH',
+      })
+      await loadPageData('invitations')
+    } catch (error) {
+      setDataError(error.message || 'Could not update membership request')
     }
   }
 
@@ -356,19 +362,30 @@ function App() {
     }
   }
 
+  const handleBorrowRequest = async (notification, action) => {
+    const loanId = notification.data?.loanId?._id || notification.data?.loanId
+    if (!loanId || loanActionId) return
+    setLoanActionId(String(loanId))
+    try {
+      await apiRequest(`/loans/${loanId}/${action}`, { method: 'PATCH' })
+      await apiRequest(`/notifications/${notification._id}/read`, { method: 'PATCH' })
+      await Promise.all([loadPageData('notifications'), loadPageData('inventory')])
+    } catch (error) {
+      setDataError(error.message || 'Could not update borrow request')
+    } finally {
+      setLoanActionId('')
+    }
+  }
+
   const handleSignup = async (e) => {
     e.preventDefault()
     try {
-      const response = await fetch(`${API_BASE}/auth/register`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(signupData),
+      const data = await apiRequest('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(signupData),
       })
-      const data = await response.json()
       console.log('Signup response:', data)
-      if (data.success) {
+      if (data.data) {
         localStorage.setItem('token', data.data.token)
         localStorage.setItem('user', JSON.stringify(data.data))
         setAuthMessage({ type: 'success', text: 'Registration successful! Redirecting...' })
@@ -390,16 +407,12 @@ function App() {
   const handleLogin = async (e) => {
     e.preventDefault()
     try {
-      const response = await fetch(`${API_BASE}/auth/login`, {
+      const data = await apiRequest('/auth/login', {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
         body: JSON.stringify(loginData),
       })
-      const data = await response.json()
       console.log('Login response:', data)
-      if (data.success) {
+      if (data.data) {
         localStorage.setItem('token', data.data.token)
         localStorage.setItem('user', JSON.stringify(data.data))
         setAuthMessage({ type: 'success', text: 'Login successful! Redirecting...' })
@@ -429,6 +442,7 @@ function App() {
   return (
     <div className="landing-page">
       {isAuthenticated ? (
+        <BorrowBuddyProvider user={user}>
         <div className="dashboard">
           <aside className={`sidebar ${sidebarCollapsed ? 'collapsed' : ''}`}>
             <div className="sidebar-logo">
@@ -475,22 +489,6 @@ function App() {
                 </svg>
                 Inventory
               </a>
-              <a href="#" className={`sidebar-link ${currentPage === 'loans' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('loans') }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                  <circle cx="8.5" cy="7" r="4" />
-                  <line x1="20" y1="8" x2="20" y2="14" />
-                  <line x1="23" y1="11" x2="17" y2="11" />
-                </svg>
-                Loans
-              </a>
-              <a href="#" className={`sidebar-link ${currentPage === 'history' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('history') }}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="10" />
-                  <polyline points="12 6 12 12 16 14" />
-                </svg>
-                History
-              </a>
               <a href="#" className={`sidebar-link ${currentPage === 'invitations' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('invitations') }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M4 4h16v16H4z" />
@@ -498,13 +496,14 @@ function App() {
                 </svg>
                 Invitations
               </a>
-              <a href="#" className={`sidebar-link ${currentPage === 'notifications' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('notifications') }}>
+              <button type="button" className="sidebar-link sidebar-action" onClick={() => setCurrentPage('notifications')} aria-label="Notifications">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-                  <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+                  <path d="M10 21h4" />
                 </svg>
-                Notifications {unreadCount > 0 && `(${unreadCount})`}
-              </a>
+                <span className="sidebar-action-label">Notifications</span>
+                {unreadCount > 0 && <span className="sidebar-action-badge">{unreadCount}</span>}
+              </button>
               <a href="#" className={`sidebar-link ${currentPage === 'profile' ? 'active' : ''}`} onClick={(e) => { e.preventDefault(); setCurrentPage('profile') }}>
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                   <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
@@ -552,7 +551,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">{items.length}</div>
+                      <div className="stat-value"><GroupItemCount groupName="Friends Group" /></div>
                       <div className="stat-label">Total Items</div>
                     </div>
                   </div>
@@ -567,7 +566,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">{loans.filter(loan => ['requested', 'booked', 'active'].includes(loan.status)).length}</div>
+                      <div className="stat-value">{unresolvedLoans.length}</div>
                       <div className="stat-label">Active Loans</div>
                     </div>
                   </div>
@@ -580,7 +579,7 @@ function App() {
                       </svg>
                     </div>
                     <div className="stat-content">
-                      <div className="stat-value">{loans.filter(loan => loan.dueDate && new Date(loan.dueDate) < new Date() && !['returned', 'rejected'].includes(loan.status)).length}</div>
+                      <div className="stat-value">{overdueLoans.length}</div>
                       <div className="stat-label">Overdue</div>
                     </div>
                   </div>
@@ -604,33 +603,26 @@ function App() {
                 <div className="recent-activity">
                   <div className="activity-header">
                     <h2 className="activity-title">Recent Activity</h2>
-                    <a href="#" className="view-all">View All</a>
+                    <a href="#" className="view-all" onClick={event => { event.preventDefault(); setCurrentPage('loans') }}>View All</a>
                   </div>
 
                   <div className="activity-list">
-                    <div className="activity-item">
-                      <div className="activity-info">
-                        <div className="activity-name">Laptop Charger borrowed by Rahul</div>
-                        <div className="activity-date">25 Oct 2026 - Due in 2 days</div>
+                    {recentLoans.length ? recentLoans.map(loan => {
+                      const dueText = loan.dueDate && unresolvedLoans.includes(loan)
+                        ? new Date(loan.dueDate).getTime() < currentTime
+                          ? 'Overdue'
+                          : `Due ${new Date(loan.dueDate).toLocaleDateString()}`
+                        : loan.returnDate
+                          ? `Returned ${new Date(loan.returnDate).toLocaleDateString()}`
+                          : new Date(loan.updatedAt || loan.createdAt).toLocaleDateString()
+                      return <div className="activity-item" key={loan._id}>
+                        <div className="activity-info">
+                          <div className="activity-name">{activityLabel(loan)}</div>
+                          <div className="activity-date">{dueText}</div>
+                        </div>
+                        <div className="activity-time">{relativeActivityTime(loan.updatedAt || loan.createdAt)}</div>
                       </div>
-                      <div className="activity-time">2 days ago</div>
-                    </div>
-
-                    <div className="activity-item">
-                      <div className="activity-info">
-                        <div className="activity-name">Book returned by Kiran</div>
-                        <div className="activity-date">24 Oct 2026</div>
-                      </div>
-                      <div className="activity-time">3 days ago</div>
-                    </div>
-
-                    <div className="activity-item">
-                      <div className="activity-info">
-                        <div className="activity-name">Cricket Bat borrowed by Srikar</div>
-                        <div className="activity-date">22 Oct 2026</div>
-                      </div>
-                      <div className="activity-time">5 days ago</div>
-                    </div>
+                    }) : <div className="activity-item"><div className="activity-info"><div className="activity-name">No recent activity</div><div className="activity-date">Borrowing activity will appear here.</div></div></div>}
                   </div>
                 </div>
               </>
@@ -724,42 +716,58 @@ function App() {
                     </div>
 
                     <div className="groups-list">
-                      {(() => {
-                        const filteredGroups = groups.filter(group => {
-                          const q = groupSearchQuery.trim().toLowerCase()
-                          if (!q) return true
-                          return (
-                            (group.name || '').toLowerCase().includes(q) ||
-                            (group.description || '').toLowerCase().includes(q)
-                          )
-                        })
-                        return filteredGroups.length === 0 ? (
-                          <div className="no-groups-message">
-                            <p>{groupSearchQuery.trim() ? 'No matching groups.' : 'No groups yet. Create your first group to get started!'}</p>
-                          </div>
-                        ) : (
-                          filteredGroups.map((group) => (
-                            <div key={group._id} className="group-compact-card">
-                              <div className="group-compact-left">
-                                {group.image ? (
-                                  <img src={`${SERVER_BASE}/${group.image}`} alt={group.name} className="group-compact-image" />
-                                ) : (
-                                  <div className="group-compact-icon">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                                      <circle cx="9" cy="7" r="4" />
-                                      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                                      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                                    </svg>
+                      {groups.length === 0 ? (
+                        <div className="no-groups-message">
+                          <p>No groups yet. Create your first group to get started!</p>
+                        </div>
+                      ) : (
+                        groups.map((group) => (
+                          <div key={group._id} className="group-compact-card">
+                            <div className="group-compact-left">
+                              {group.image ? (
+                                <img src={getAssetUrl(group.image)} alt={group.name} className="group-compact-image" />
+                              ) : (
+                                <div className="group-compact-icon">
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+                                    <circle cx="9" cy="7" r="4" />
+                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+                                    <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+                                  </svg>
+                                </div>
+                              )}
+                            </div>
+                            <div className="group-compact-center">
+                              <h3 className="group-compact-name">{group.name}</h3>
+                              <div className="group-compact-tags">
+                                {group.categories && group.categories.map((cat, idx) => (
+                                  <span key={idx} className="group-compact-tag">{cat}</span>
+                                ))}
+                              </div>
+                              <p className="group-compact-desc">{group.description || 'No description'}</p>
+                            </div>
+                            <div className="group-compact-right">
+                              <button className="group-compact-view-btn" onClick={() => handleViewGroup(group._id)}>
+                                View Group
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                  <polyline points="9 18 15 12 9 6" />
+                                </svg>
+                              </button>
+                            </div>
+                            <div className="group-compact-bottom">
+                              <div className="group-compact-members">
+                                {group.memberIds && group.memberIds.slice(0, 4).map((member, idx) => (
+                                  <div key={idx} className={`member-avatar-compact ${['charcoal', 'slate', 'purple', 'light'][idx % 4]}`}>
+                                    {member.name ? member.name.charAt(0).toUpperCase() : 'U'}
                                   </div>
                                 )}
                               </div>
-                              <div className="group-compact-center">
-                                <h3 className="group-compact-name">{group.name}</h3>
-                                <div className="group-compact-tags">
-                                  {group.categories && group.categories.map((cat, idx) => (
-                                    <span key={idx} className="group-compact-tag">{cat}</span>
-                                  ))}
+                              <div className="group-compact-stats">
+                                <div className="stat-with-icon">
+                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+                                  </svg>
+                                  <span><GroupItemCount groupName={group.name} /> items</span>
                                 </div>
                                 <p className="group-compact-desc">{group.description || 'No description'}</p>
                               </div>
@@ -769,34 +777,7 @@ function App() {
                                   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                                     <polyline points="9 18 15 12 9 6" />
                                   </svg>
-                                </button>
-                              </div>
-                              <div className="group-compact-bottom">
-                                <div className="group-compact-members">
-                                  {group.memberIds && group.memberIds.slice(0, 4).map((member, idx) => (
-                                    <div key={idx} className={`member-avatar-compact ${['charcoal', 'slate', 'purple', 'light'][idx % 4]}`}>
-                                      {member.name ? member.name.charAt(0).toUpperCase() : 'U'}
-                                    </div>
-                                  ))}
-                                  {group.memberIds && group.memberIds.length > 4 && (
-                                    <div className="member-avatar-more-compact">+{group.memberIds.length - 4}</div>
-                                  )}
-                                  <span className="member-count-compact">{group.memberIds?.length || 0} members</span>
-                                </div>
-                                <div className="group-compact-stats">
-                                  <div className="stat-with-icon">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
-                                    </svg>
-                                    <span>0 items</span>
-                                  </div>
-                                  <div className="stat-with-icon">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M4 19.5A2.5 2.5 0 016.5 17H20" />
-                                      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 014 19.5v-15A2.5 2.5 0 016.5 2z" />
-                                    </svg>
-                                    <span>0 active loans</span>
-                                  </div>
+                                  <span><GroupItemCount groupName={group.name} type="loans" /> active loans</span>
                                 </div>
                               </div>
                             </div>
@@ -805,6 +786,20 @@ function App() {
                       })()}
                     </div>
                   </div>
+
+                  {discoverableGroups.length > 0 && <div className="groups-list">
+                    <h2 className="activity-title">Discover Groups</h2>
+                    {discoverableGroups.map(group => <div key={group._id} className="group-compact-card">
+                      <div className="group-compact-center">
+                        <h3 className="group-compact-name">{group.name}</h3>
+                        <p className="group-compact-desc">{group.description || 'No description'}</p>
+                        <span className="member-count-compact">{group.memberIds?.length || 0} members</span>
+                      </div>
+                      <div className="group-compact-right">
+                        <button className="group-compact-view-btn" onClick={() => handleJoinRequest(group._id)}>Request to Join</button>
+                      </div>
+                    </div>)}
+                  </div>}
 
                   <aside className="groups-sidebar">
                     <div className="sidebar-section">
@@ -1153,39 +1148,7 @@ function App() {
               </>
             )}
 
-            {currentPage === 'inventory' && (
-              <>
-                <header className="dashboard-header">
-                  <div className="header-content">
-                    <h1 className="dashboard-greeting">Inventory</h1>
-                    <p className="dashboard-subtitle">Browse items shared with your groups and manage your own items.</p>
-                  </div>
-                  <button className="create-group-btn" disabled>+ Add Item</button>
-                </header>
-                {dataError && <div className="auth-message error">{dataError}</div>}
-                {dataLoading ? <div className="no-groups-message"><p>Loading inventory...</p></div> : (
-                  <div className="inventory-grid">
-                    {items.length === 0 ? <div className="no-groups-message"><p>No accessible items yet.</p></div> : items.map(item => (
-                      <article className="item-card" key={item._id}>
-                        <div className="item-card-image-box">
-                          {item.imageUrl ? <img className="item-card-image" src={imageUrl(item.imageUrl)} alt={item.name} /> : <div className="item-card-placeholder"><span>📦</span><span>No image</span></div>}
-                          <span className={`item-card-status-badge badge-${item.status}`}>{item.status}</span>
-                        </div>
-                        <div className="item-card-content">
-                          <h3 className="item-card-title">{item.name}</h3>
-                          <span className="item-card-category">{item.category}</span>
-                          <p className="item-card-desc">{item.description || 'No description provided.'}</p>
-                          <div className="item-card-meta"><span>Owner: {item.ownerId?.name || 'You'}</span></div>
-                          <button className="btn-borrow" disabled={item.status !== 'available' || item.ownerId?._id === user?._id} onClick={() => handleBorrow(item._id)}>
-                            {item.ownerId?._id === user?._id ? 'Your item' : item.status === 'available' ? 'Request to borrow' : item.status}
-                          </button>
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                )}
-              </>
-            )}
+            {currentPage === 'inventory' && <Inventory invitations={invitations.filter(invitation => invitation.direction !== 'outgoing')} onInvitation={handleInvitation} />}
 
             {(currentPage === 'loans' || currentPage === 'history') && (
               <>
@@ -1203,8 +1166,8 @@ function App() {
                       {loans.filter(loan => currentPage === 'history' ? ['returned', 'rejected', 'cancelled'].includes(loan.status) : !['returned', 'rejected', 'cancelled'].includes(loan.status)).map(loan => {
                         const borrower = loan.borrowerId?._id === user?._id
                         const otherParty = borrower ? loan.lenderId?.name : loan.borrowerId?.name
-                        const action = loan.status === 'requested' && !borrower ? 'approve' : loan.status === 'requested' && borrower ? 'reject' : loan.status === 'booked' || loan.status === 'active' ? 'return' : null
-                        return <tr key={loan._id}><td>{loan.itemId?.name || 'Item'}</td><td>{borrower ? 'Borrower' : 'Owner'}</td><td>{otherParty || '—'}</td><td>{loan.status}</td><td>{loan.dueDate ? new Date(loan.dueDate).toLocaleDateString() : '—'}</td><td>{action && <button className="btn-borrow" onClick={() => handleLoanAction(loan._id, action)}>{action}</button>}{loan.status === 'requested' && !borrower && <button className="btn-cancel" onClick={() => handleLoanAction(loan._id, 'reject')}>Reject</button>}</td></tr>
+                        const action = loan.status === 'requested' && !borrower ? 'approve' : loan.status === 'booked' ? 'activate' : loan.status === 'active' ? 'return' : null
+                        return <tr key={loan._id}><td>{loan.itemId?.name || 'Item'}</td><td>{borrower ? 'Borrower' : 'Owner'}</td><td>{otherParty || '—'}</td><td>{loan.status}</td><td>{loan.dueDate ? new Date(loan.dueDate).toLocaleDateString() : '—'}</td><td>{action && <button className="btn-borrow" disabled={loanActionId === loan._id} onClick={() => handleLoanAction(loan._id, action)}>{loanActionId === loan._id ? 'Updating…' : action}</button>}{loan.status === 'requested' && !borrower && <button className="btn-cancel" disabled={loanActionId === loan._id} onClick={() => handleLoanAction(loan._id, 'reject')}>Reject</button>}</td></tr>
                       })}
                     </tbody>
                   </table>
@@ -1217,35 +1180,51 @@ function App() {
               <>
                 <header className="dashboard-header"><div className="header-content"><h1 className="dashboard-greeting">Invitations</h1><p className="dashboard-subtitle">Accept or decline invitations before joining a group.</p></div></header>
                 {dataError && <div className="auth-message error">{dataError}</div>}
-                <div className="loans-table-wrapper"><table className="loans-table"><thead><tr><th>Group</th><th>Invited by</th><th>Date</th><th>Status</th><th>Action</th></tr></thead><tbody>
-                  {invitations.map(invitation => <tr key={invitation._id}><td>{invitation.groupId?.name || 'Group'}</td><td>{invitation.invitedBy?.name || 'Member'}</td><td>{new Date(invitation.createdAt).toLocaleDateString()}</td><td>{invitation.status}</td><td>{invitation.status === 'pending' && <><button className="btn-borrow" onClick={() => handleInvitation(invitation._id, 'accept')}>Accept</button><button className="btn-cancel" onClick={() => handleInvitation(invitation._id, 'reject')}>Decline</button></>}</td></tr>)}
+                <div className="loans-table-wrapper"><table className="loans-table"><thead><tr><th>Group</th><th>Invited by</th><th>Status</th><th>Action</th></tr></thead><tbody>
+                  {invitations.map(invitation => <tr key={invitation._id}><td>{invitation.groupId?.name || 'Group'}</td><td>{invitation.requestType === 'member_request' ? 'Your membership request' : invitation.inviterId?.name || 'Member'}</td><td>{invitation.status}</td><td>{invitation.direction === 'incoming' && invitation.requestType !== 'member_request' && invitation.status === 'pending' && <><button className="btn-borrow" onClick={() => handleInvitation(invitation._id, 'accept')}>Accept</button><button className="btn-cancel" onClick={() => handleInvitation(invitation._id, 'reject')}>Decline</button></>}</td></tr>)}
                 </tbody></table>{invitations.length === 0 && <div className="no-groups-message"><p>No invitations.</p></div>}</div>
+                <div className="loans-table-wrapper"><table className="loans-table"><thead><tr><th>Group</th><th>Requested by</th><th>Status</th><th>Action</th></tr></thead><tbody>
+                  {ownerRequests.map(request => <tr key={request._id}><td>{request.groupId?.name || 'Group'}</td><td>{request.requestedBy?.name || request.inviteeId?.name || 'Member'}</td><td>{request.status}</td><td>{request.status === 'pending' && <><button className="btn-borrow" onClick={() => handleMembershipRequest(request._id, 'approve')}>Approve</button><button className="btn-cancel" onClick={() => handleMembershipRequest(request._id, 'reject')}>Reject</button></>}</td></tr>)}
+                </tbody></table>{ownerRequests.length === 0 && <div className="no-groups-message"><p>No pending membership requests.</p></div>}</div>
               </>
             )}
 
             {currentPage === 'notifications' && (
               <>
-                <header className="dashboard-header"><div className="header-content"><h1 className="dashboard-greeting">Notifications</h1><p className="dashboard-subtitle">Stay updated on invitations, borrow requests, and returns.</p></div><button className="btn-mark-all" onClick={handleMarkAllNotificationsRead}>Mark all as read</button></header>
+                <header className="dashboard-header notifications-header"><div className="header-content"><h1 className="dashboard-greeting">Notifications</h1><p className="dashboard-subtitle">Stay updated on invitations, borrow requests, and returns.</p></div><button className="btn-mark-all" disabled={!unreadCount || notificationsLoading} aria-label={`Mark all notifications as read${unreadCount ? ` (${unreadCount} unread)` : ''}`} onClick={handleMarkAllNotificationsRead}>Mark all as read</button></header>
+                {dataError && <div className="auth-message error">{dataError}</div>}
                 <div className="notification-list">
-                  {notifications.length === 0 ? <div className="no-notifications">No notifications.</div> : notifications.map(notification => {
-                    const invitation = notification.type === 'group_invitation' ? notification.data?.invitationId : null
-                    const invitationId = invitation?._id || invitation
-                    const isPendingInvitation = invitation && (typeof invitation === 'string' || invitation.status === 'pending')
-                    return <div key={notification._id} className={`notification-item ${notification.read ? '' : 'unread'}`} onClick={() => !notification.read && handleMarkNotificationRead(notification._id)}>
-                      <div className="notification-icon">!</div>
-                      <div className="notification-content">
-                        <div className="notification-item-title">{notification.title}</div>
-                        <div className="notification-item-msg">{notification.message}</div>
-                        <div className="notification-item-time">{new Date(notification.createdAt).toLocaleString()}</div>
-                        {notification.type === 'group_invitation' && notification.senderId?.name && <div className="notification-item-msg">Invited by: {notification.senderId.name}</div>}
-                        {notification.type === 'group_invitation' && notification.data?.groupId?.name && <div className="notification-item-msg">Group: {notification.data.groupId.name}</div>}
-                        {isPendingInvitation && <div className="invitation-actions">
-                          <button className="btn-borrow" onClick={(event) => { event.stopPropagation(); handleInvitation(invitationId, 'accept') }}>Accept</button>
-                          <button className="btn-cancel" onClick={(event) => { event.stopPropagation(); handleInvitation(invitationId, 'reject') }}>Reject</button>
-                        </div>}
-                      </div>
+                  {notificationsLoading ? <div className="notification-empty">Loading notifications…</div> : notifications.length === 0 ? <div className="notification-empty"><strong>No notifications yet</strong><span>You're all caught up.</span></div> : notifications.map(notification => <article key={notification._id} className={`notification-item ${notification.read ? 'read' : 'unread'}`}>
+                    <div className="notification-icon" aria-hidden="true">!</div>
+                    <div className="notification-content">
+                      <div className="notification-item-title">{notification.title}</div>
+                      <div className="notification-item-msg">{notification.message}</div>
+                      <div className="notification-item-time">{new Date(notification.createdAt).toLocaleString()}</div>
                     </div>
-                  })}
+                    <div className="notification-actions">
+                      {notification.type === 'borrow_request' && notification.data?.loanId && (
+                        <>
+                          <button
+                            type="button"
+                            className="notification-action-reject"
+                            disabled={loanActionId === String(notification.data.loanId?._id || notification.data.loanId)}
+                            onClick={() => handleBorrowRequest(notification, 'reject')}
+                          >
+                            Reject
+                          </button>
+                          <button
+                            type="button"
+                            className="notification-action-approve"
+                            disabled={loanActionId === String(notification.data.loanId?._id || notification.data.loanId)}
+                            onClick={() => handleBorrowRequest(notification, 'approve')}
+                          >
+                            Accept
+                          </button>
+                        </>
+                      )}
+                      {!notification.read && <button type="button" className="notification-read-action" onClick={() => handleMarkNotificationRead(notification._id)}>Mark as read</button>}
+                    </div>
+                  </article>)}
                 </div>
               </>
             )}
@@ -1328,165 +1307,14 @@ function App() {
               <ViewGroup
                 groupId={selectedGroupId}
                 group={groups.find(group => group._id === selectedGroupId)}
-                onBack={() => window.history.state?.fromDiscover ? setCurrentPage('discover-groups') : setCurrentPage('my-groups')}
+                onBack={() => setCurrentPage('my-groups')}
+                onDeleteGroup={handleDeleteGroup}
               />
             )}
 
-            {currentPage === 'inventory' && <GroupRecordsPage type="inventory" />}
-            {currentPage === 'loans' && <GroupRecordsPage type="loans" />}
-
-            {currentPage === 'discover-groups' && (
-              <>
-                <header className="dashboard-header">
-                  <div className="header-content">
-                    <h1 className="dashboard-greeting">Discover Groups</h1>
-                    <p className="dashboard-subtitle">Find and explore groups created by others</p>
-                  </div>
-                  <button className="create-group-btn" onClick={() => setCurrentPage('create-group')}>
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                      <line x1="12" y1="5" x2="12" y2="19" />
-                      <line x1="5" y1="12" x2="19" y2="12" />
-                    </svg>
-                    Create Group
-                  </button>
-                </header>
-                {discoverError && <div className="auth-message error">{discoverError}</div>}
-                <div className="groups-content">
-                  <div className="groups-main">
-                    <div className="groups-search-bar">
-                      <div className="search-input-wrapper">
-                        <svg className="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <circle cx="11" cy="11" r="8" />
-                          <line x1="21" y1="21" x2="16.65" y2="16.65" />
-                        </svg>
-                        <input
-                          type="text"
-                          placeholder="Search groups by name or description..."
-                          className="search-input"
-                          value={discoverQuery}
-                          onChange={(e) => setDiscoverQuery(e.target.value)}
-                        />
-                      </div>
-                      <select className="category-select" disabled>
-                        <option>All Categories</option>
-                      </select>
-                    </div>
-                    {discoverLoading ? (
-                      <div className="no-groups-message"><p>Loading groups…</p></div>
-                    ) : (
-                      <div className="groups-list">
-                        {discoverableGroups.length === 0 ? (
-                          <div className="no-groups-message">
-                            <p>{discoverQuery.trim() ? 'No matching groups found.' : 'No groups to discover right now.'}</p>
-                          </div>
-                        ) : (
-                          discoverableGroups.map((group) => (
-                            <div key={group._id} className={`group-compact-card ${group.isMember ? 'group-member' : ''}`}>
-                              <div className="group-compact-left">
-                                {group.image ? (
-                                  <img src={`${SERVER_BASE}/${group.image}`} alt={group.name} className="group-compact-image" />
-                                ) : (
-                                  <div className="group-compact-icon">
-                                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                      <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                                      <circle cx="9" cy="7" r="4" />
-                                      <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                                      <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                                    </svg>
-                                  </div>
-                                )}
-                              </div>
-                              <div className="group-compact-center">
-                                <h3 className="group-compact-name">
-                                  {group.name}
-                                  {group.isMember && <span className="group-member-badge">Joined</span>}
-                                </h3>
-                                <div className="group-compact-tags">
-                                  {group.categories && group.categories.map((cat, idx) => (
-                                    <span key={idx} className="group-compact-tag">{cat}</span>
-                                  ))}
-                                </div>
-                                <p className="group-compact-desc">{group.description || 'No description'}</p>
-                              </div>
-                              <div className="group-compact-right">
-                                <button
-                                  className="group-compact-view-btn"
-                                  onClick={() => {
-                                    window.history.replaceState({ fromDiscover: true }, '')
-                                    handleViewGroup(group._id)
-                                  }}
-                                >
-                                  {group.isMember ? 'View Group' : 'Open Details'}
-                                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                    <polyline points="9 18 15 12 9 6" />
-                                  </svg>
-                                </button>
-                              </div>
-                              <div className="group-compact-bottom">
-                                <div className="group-compact-members">
-                                  <span className="member-count-compact">{group.memberCount || 0} members</span>
-                                </div>
-                                <div className="group-compact-stats">
-                                  <div className="stat-with-icon">
-                                    <span>Created by {group.ownerName || 'Unknown'}</span>
-                                  </div>
-                                </div>
-                              </div>
-                            </div>
-                          ))
-                        )}
-                      </div>
-                    )}
-                  </div>
-                  <aside className="groups-sidebar">
-                    <div className="sidebar-section">
-                      <div className="sidebar-section-header-with-icon">
-                        <svg className="quick-actions-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2" />
-                        </svg>
-                        <h3 className="sidebar-section-title">Quick Actions</h3>
-                      </div>
-                      <div className="quick-actions">
-                        <div className="quick-action-card quick-action-create" onClick={() => setCurrentPage('create-group')}>
-                          <div className="quick-action-icon-container">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <line x1="12" y1="5" x2="12" y2="19" />
-                              <line x1="5" y1="12" x2="19" y2="12" />
-                            </svg>
-                          </div>
-                          <div className="quick-action-content">
-                            <h4 className="quick-action-title">Create New Group</h4>
-                            <p className="quick-action-desc">Start a new group with your friends or colleagues</p>
-                          </div>
-                          <svg className="quick-action-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="9 18 15 12 9 6" />
-                          </svg>
-                        </div>
-                        <div className="quick-action-card quick-action-explore" onClick={() => setCurrentPage('my-groups')}>
-                          <div className="quick-action-icon-container quick-action-icon-blue">
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                              <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
-                              <circle cx="9" cy="7" r="4" />
-                              <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
-                              <path d="M16 3.13a4 4 0 0 1 0 7.75" />
-                            </svg>
-                          </div>
-                          <div className="quick-action-content">
-                            <h4 className="quick-action-title">My Groups</h4>
-                            <p className="quick-action-desc">View groups you belong to</p>
-                          </div>
-                          <svg className="quick-action-arrow quick-action-arrow-blue" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="9 18 15 12 9 6" />
-                          </svg>
-                        </div>
-                      </div>
-                    </div>
-                  </aside>
-                </div>
-              </>
-            )}
           </main>
         </div>
+        </BorrowBuddyProvider>
       ) : (
         <div className="landing-page">
       <nav className="navbar">
@@ -1542,15 +1370,6 @@ function App() {
             A simple and organized way to manage shared items
             within your community, team, or classroom.
           </p>
-          <div className="hero-buttons">
-            <button className="btn-get-started" id="btn-get-started">
-              Get Started
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M5 12h14M13 6l6 6-6 6" />
-              </svg>
-            </button>
-            <button className="btn-learn-more" id="btn-learn-more">Learn More</button>
-          </div>
           <div className="why-heading">
             <span className="why-line"></span>
             <span className="why-text">WHY THIS PRODUCT EXISTS?</span>
@@ -1561,14 +1380,25 @@ function App() {
             easier, reduce unnecessary purchases, and build a
             culture of trust, sustainability and community.
           </p>
+          <div className="hero-buttons">
+            <button className="btn-get-started" id="btn-get-started" onClick={() => setShowSignup(true)}>
+              Get Started
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M5 12h14M13 6l6 6-6 6" />
+              </svg>
+            </button>
+            <button className="btn-learn-more" id="btn-learn-more">Learn More</button>
+          </div>
         </div>
 
         <div className="hero-image-wrapper">
-          <img
-            src={heroImage}
-            alt="Shared items including a laptop, headphones, projector, plant, and desk lamp arranged on a navy desk"
-            className="hero-image"
-          />
+          <div className="hero-image-frame">
+            <img
+              src={heroImage}
+              alt="Shared items including a laptop, headphones, projector, plant, and desk lamp arranged on a navy desk"
+              className="hero-image"
+            />
+          </div>
         </div>
       </section>
 

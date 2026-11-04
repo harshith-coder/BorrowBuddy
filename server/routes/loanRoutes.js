@@ -3,6 +3,7 @@ const {
   requestLoan,
   approveLoan,
   rejectLoan,
+  activateLoan,
   returnLoan,
   getUserLoans,
 } = require("../controllers/loanController.js");
@@ -14,6 +15,7 @@ router.post("/", protect, requestLoan);
 router.get("/", protect, getUserLoans);
 router.patch("/:id/approve", protect, approveLoan);
 router.patch("/:id/reject", protect, rejectLoan);
+router.patch("/:id/activate", protect, activateLoan);
 router.patch("/:id/return", protect, returnLoan);
 
 module.exports = router;

@@ -10,7 +10,7 @@ const itemIconFor = item => {
   return 'box'
 }
 
-function MemberAccordion({ member, items, expanded, onToggle, onBorrow }) {
+function MemberAccordion({ member, items, expanded, onToggle, onBorrow, canRemove, onRemove }) {
   const availableItems = items.filter(item => item.status === 'available')
   const departmentLine = [member.department, member.year].filter(Boolean).join(', ')
 
@@ -38,6 +38,9 @@ function MemberAccordion({ member, items, expanded, onToggle, onBorrow }) {
           </div> : <p className="view-group-no-items">No items shared by this member.</p>}
           {availableItems.length > 0 && <button className="view-group-borrow-item" type="button" onClick={onBorrow}>
             <GroupIcon name="borrow" />Borrow Item
+          </button>}
+          {canRemove && <button className="view-group-borrow-item" type="button" onClick={onRemove}>
+            Remove Member
           </button>}
         </section>
       </div>}

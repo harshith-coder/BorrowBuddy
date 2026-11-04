@@ -59,6 +59,8 @@ const borrowableItemSchema = new mongoose.Schema(
   }
 );
 
+borrowableItemSchema.index({ sharingType: 1, sharedWithGroups: 1, ownerId: 1 });
+
 module.exports =
   mongoose.models.BorrowableItem ||
   mongoose.model("BorrowableItem", borrowableItemSchema);
