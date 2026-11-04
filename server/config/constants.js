@@ -6,7 +6,7 @@ dotenv.config({ path: path.resolve(__dirname, "../.env") });
 const Constants = {
   DBURL: process.env.DBURL,
   PORT: process.env.PORT || 3000,
-  HOST: process.env.HOST || "localhost",
+  HOST: process.env.HOST || "0.0.0.0",
   CORS_ORIGINS: (process.env.CORS_ORIGINS || "http://localhost:5173")
     .split(",")
     .map((origin) => origin.trim())
